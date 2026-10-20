@@ -1,0 +1,11 @@
+{
+  "barWidth": 10,
+  "quotaBarWidth": 6,
+  "maxWidth": null,
+  "contextWarning": 70,
+  "contextCritical": 85,
+  "showStreak": true,
+  "showEta": true,
+  "showQuota": true,
+  "showGit": true
+}
