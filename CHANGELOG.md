@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-10-21
+
+### Fixed
+
+- Windows statusLine quoting: Antigravity CLI's Windows statusline runner does not strip quotes — it splits the command naively and node received the literal quoted path resolved against the workspace cwd (`Cannot find module 'C:\…\minishop\"C:\…\agline.mjs"'`). The win32 statusLine command written to `settings.json` is now unquoted (`node C:\…\agline.mjs`). When the resolved share path contains a space, install prints a warning that the path must not contain spaces on Windows because the runner cannot handle quoting. `agline doctor` still extracts the legacy quoted 0.2.3 form as well as the new bare form. POSIX output is byte-identical to previous releases.
+
 ## [0.2.3] - 2026-10-21
 
 ### Added

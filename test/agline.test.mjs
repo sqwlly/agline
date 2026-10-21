@@ -31,6 +31,7 @@ const {
   WIN_CMD_MARKER,
   winCmdShimContent,
   chooseWinShimDir,
+  statusLineCommand,
   statusLineTarget,
 } = await import('../agline.mjs');
 
@@ -435,18 +436,46 @@ test('chooseWinShimDir: %APPDATA%\\npm wins when it exists, else ~/.local/bin', 
   });
 });
 
-test('statusLine command with a Windows path: valid JSON, escaped backslashes, round-trips', () => {
-  const share = 'C:\\Users\\jane doe\\.local\\share\\agline\\agline.mjs'; // note the space
+test('statusLine command with a Windows path: unquoted, valid JSON, escaped backslashes, round-trips', () => {
+  // Antigravity's win32 statusline runner takes quotes literally, so the
+  // command is written WITHOUT quotes (0.2.4+).
+  const share = 'C:\\Users\\jane\\.local\\share\\agline\\agline.mjs';
   const settings = {
-    statusLine: { type: 'command', command: `node "${share}"`, enabled: true },
+    statusLine: { type: 'command', command: `node ${share}`, enabled: true },
     otherKey: { nested: true },
   };
   const raw = JSON.stringify(settings, null, 2) + '\n';
-  assert.ok(raw.includes('C:\\\\Users\\\\jane doe'), 'backslashes escaped in the JSON text');
+  assert.ok(raw.includes('C:\\\\Users\\\\jane'), 'backslashes escaped in the JSON text');
+  assert.ok(!raw.includes('node \\"'), 'no quotes around the path in the JSON text');
   const back = JSON.parse(raw);
-  assert.equal(back.statusLine.command, `node "${share}"`, 'command round-trips exactly');
+  assert.equal(back.statusLine.command, `node ${share}`, 'command round-trips exactly');
+  assert.ok(!back.statusLine.command.includes('"'), 'no quotes in the parsed command');
   assert.equal(back.otherKey.nested, true, 'other settings preserved');
-  assert.equal(statusLineTarget(back.statusLine.command), share, 'doctor target extraction handles quotes');
+  assert.equal(statusLineTarget(back.statusLine.command), share, 'doctor extracts the bare win32 path');
+});
+
+test('statusLineCommand emits an unquoted node command on every platform', () => {
+  const cmd = statusLineCommand();
+  assert.ok(cmd.startsWith('node '), 'node prefix');
+  assert.ok(!cmd.includes('"'), 'no quotes — the win32 runner takes them literally');
+  assert.ok(cmd.endsWith('agline.mjs'));
+  assert.equal(statusLineTarget(cmd), cmd.slice('node '.length), 'doctor extracts the emitted target');
+});
+
+test('statusLineTarget: bare win32 drive-letter path and legacy quoted form', () => {
+  // bare win32 path with a drive letter (0.2.4+ form)
+  assert.equal(
+    statusLineTarget('node C:\\Users\\jane\\.local\\share\\agline\\agline.mjs'),
+    'C:\\Users\\jane\\.local\\share\\agline\\agline.mjs'
+  );
+  // legacy 0.2.3 quoted form still parses (incl. a space inside the quotes)
+  assert.equal(
+    statusLineTarget('node "C:\\Users\\jane doe\\.local\\share\\agline\\agline.mjs"'),
+    'C:\\Users\\jane doe\\.local\\share\\agline\\agline.mjs'
+  );
   // POSIX-style unquoted command still extracts via whitespace split
-  assert.equal(statusLineTarget('node /home/u/.local/share/agline/agline.mjs'), '/home/u/.local/share/agline/agline.mjs');
+  assert.equal(
+    statusLineTarget('node /home/u/.local/share/agline/agline.mjs'),
+    '/home/u/.local/share/agline/agline.mjs'
+  );
 });

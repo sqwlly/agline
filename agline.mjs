@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.2.3';
+const VERSION = '0.2.4';
 
 const HOME = os.homedir();
 const CONFIG_DIR = path.join(HOME, '.config', 'agline');
@@ -708,14 +708,19 @@ function selfPath() {
   return fs.realpathSync(fileURLToPath(import.meta.url));
 }
 
-// The statusLine command written into settings.json. Windows paths can
-// contain spaces, so the share path is quoted there (JSON.stringify escapes
-// the backslashes); POSIX keeps the bare `node <path>` form.
+// The statusLine command written into settings.json. Antigravity CLI's
+// Windows statusline runner does NOT strip quotes — it splits the command
+// naively and node receives the literal quoted path — so the path stays
+// unquoted on every platform (`node C:\…\agline.mjs` / `node /…/agline.mjs`).
+// A win32 share path containing a space would break the runner's naive
+// splitting; install warns about that case explicitly.
 function statusLineCommand() {
-  return IS_WIN32 ? `node "${SHARE_PATH}"` : `node ${SHARE_PATH}`;
+  return `node ${SHARE_PATH}`;
 }
 
 // Inverse of the above for doctor: pull the script path out of the command.
+// Handles the bare `node C:\…` / `node /…` form (whitespace split, last token)
+// and the legacy 0.2.3 quoted win32 form (`node "C:\…"`).
 function statusLineTarget(command) {
   const q = String(command).match(/"([^"]+)"\s*$/);
   if (q) return q[1];
@@ -801,6 +806,13 @@ function cmdInstall() {
   row('config', CONFIG_PATH, configCreated ? 'defaults written' : 'already exists, untouched');
   row('settings', SETTINGS_PATH, 'statusLine patched');
   if (backupNote) row('backup', bak, backupNote);
+  if (IS_WIN32 && SHARE_PATH.includes(' ')) {
+    console.log('');
+    console.log(`${esc(33, '!')} the install path contains a space: ${SHARE_PATH}`);
+    console.log(
+      `  Antigravity's Windows statusline runner cannot handle quoting, so the statusLine command is written unquoted — on Windows the install path must not contain spaces.`
+    );
+  }
   if (shimResult !== 'skipped-foreign' && !onPath) {
     console.log('');
     console.log(`${esc(33, '!')} ${shimDir} is not on your PATH`);

@@ -87,8 +87,9 @@ What's different:
   for typical Node installs) when that directory exists; otherwise to `%USERPROFILE%\.local\bin`,
   and the installer prints a `setx PATH "%PATH%;%USERPROFILE%\.local\bin"` hint — open a **new
   terminal** afterwards, `setx` does not affect the current one.
-- **settings.json** gets a quoted command (`node "C:\…\agline.mjs"`) so paths with spaces and
-  backslashes survive; the file stays ordinary JSON.
+- **settings.json** gets an unquoted command (`node C:\…\agline.mjs`) — Antigravity's Windows
+  statusline runner takes quotes literally, so the install path must not contain spaces
+  (install prints a warning if it does); the file stays ordinary JSON.
 
 If something is off on Windows, please open an issue at
 https://github.com/sqwlly/agline/issues with the full output of `agline doctor`.
