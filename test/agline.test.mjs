@@ -1,6 +1,6 @@
 // agline test suite — zero dependencies, node:test only. Runs fully offline:
 // HOME is redirected to a temp dir BEFORE importing the module, so all state
-// files (config, burn-rate samples, streak stats) land in the temp dir.
+// files (config, burn-rate samples) land in the temp dir.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -27,8 +27,7 @@ const {
   fmtEta,
   fmtCountdown,
   computeEtaFromSamples,
-  localDateKey,
-  streakFromDays,
+  fmtRate,
   selectQuotaFamily,
   quotaFamilies,
   quotaBlock,
@@ -197,6 +196,8 @@ test('ETA: <60s span → none, increasing → value, drop>30% → reset, cap >7d
   );
   // rate = 21000 tok / 2 min = 10500/min; remaining 978000 → 93.1 min → 1h33m
   assert.equal(r.eta, '1h33m');
+  assert.equal(r.rate, 10500);
+  assert.equal(fmtRate(r.rate), '175');
 
   r = computeEtaFromSamples(
     [
@@ -223,41 +224,23 @@ test('ETA: <60s span → none, increasing → value, drop>30% → reset, cap >7d
   assert.equal(r.eta, '>7d'); // slow burn is capped
 });
 
-// ---------- streak ----------
-test('streak counts consecutive local days', () => {
-  const now = new Date(2026, 9, 21, 12, 0, 0); // local noon, avoids midnight edges
-  const day = (offset) => {
-    const d = new Date(now.getTime());
-    d.setDate(d.getDate() - offset);
-    return localDateKey(d);
-  };
-  assert.equal(streakFromDays([day(2), day(1), day(0)], now), 3); // today present
-  assert.equal(streakFromDays([day(3), day(0)], now), 1); // gap yesterday
-  assert.equal(streakFromDays([day(2), day(1)], now), 2); // today missing: start at yesterday
-  assert.equal(streakFromDays([day(8), day(0)], now), 1); // gap a week ago
-  assert.equal(streakFromDays([day(1), day(1), day(0)], now), 2); // duplicates harmless
-  assert.equal(streakFromDays([], now), 0);
+test('fmtRate: tok/s with a k suffix for thousands', () => {
+  assert.equal(fmtRate(19016), '317');
+  assert.equal(fmtRate(59940), '999');
+  assert.equal(fmtRate(60000), '1.0k');
+  assert.equal(fmtRate(600), '10');
+  assert.equal(fmtRate(90000 * 60), '90.0k');
 });
 
 // ---------- full-render goldens ----------
 const projDir = path.join(tmpHome, 'proj');
 fs.mkdirSync(projDir, { recursive: true });
 
-function dayKey(offset) {
-  const d = new Date();
-  d.setDate(d.getDate() - offset);
-  return localDateKey(d);
-}
-
 function seedState() {
   const stateDir = path.join(tmpHome, '.config', 'agline');
   fs.mkdirSync(stateDir, { recursive: true });
-  // 3-day streak ending today → "★ 3d"
-  fs.writeFileSync(
-    path.join(stateDir, 'stats.json'),
-    JSON.stringify({ days: [dayKey(2), dayKey(1), dayKey(0)] })
-  );
-  // burn samples: 64% → 100% of `used` over ~9 min → ETA 30m for pct 45
+  // burn samples: 64% → 100% of `used` over ~9 min → ETA 30m for pct 45,
+  // and a burn rate of 169870 tok / 8.93 min ≈ 19016/min ≈ 317 tok/s
   const now = Date.now();
   fs.writeFileSync(
     path.join(stateDir, 'burn-state.json'),
@@ -301,16 +284,16 @@ test('golden render at width 150: all segments, new formats', () => {
   assert.ok(line.includes(' 77% · 2h46m'), '5h quota, compact countdown');
   assert.ok(line.includes('Wk ▰▱▱▱▱▱ 9% · 3d4h'), 'weekly quota, compact countdown');
   assert.ok(line.includes('ETA 30m'));
-  assert.ok(line.includes('★ 3d'));
+  assert.ok(line.includes('317 tok/s'), 'burn rate from the seeded samples');
   assert.ok(line.includes(' │ '));
 });
 
-test('golden render at width 100: streak and ETA dropped first', () => {
+test('golden render at width 100: burn rate and ETA dropped first', () => {
   seedState();
   const line = stripAnsi(render(fixedPayload(100)));
   assert.ok(!line.includes('\n'));
   assert.ok(vlen(render(fixedPayload(100))) <= 98);
-  assert.ok(!line.includes('★'), 'streak drops first');
+  assert.ok(!line.includes('tok/s'), 'burn rate drops first');
   assert.ok(!line.includes('ETA'), 'ETA drops second');
   assert.ok(line.includes('Wk'), 'weekly quota still present');
   assert.ok(line.includes('2h46m'));
@@ -403,7 +386,7 @@ test('secondary quota folds before ETA and weekly as the width shrinks', () => {
   seedState();
   const at140 = stripAnsi(render(fixedPayloadBoth(140)));
   assert.ok(!at140.includes('3p5h'), 'secondary family dropped at 140');
-  assert.ok(!at140.includes('★'), 'streak dropped first');
+  assert.ok(!at140.includes('tok/s'), 'burn rate dropped first');
   assert.ok(at140.includes('ETA 30m'), 'ETA still present');
   assert.ok(at140.includes('Wk ▰▱▱▱▱▱ 9%'), 'primary weekly still present');
   const at100 = stripAnsi(render(fixedPayloadBoth(100)));

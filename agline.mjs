@@ -9,13 +9,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.2.7';
+const VERSION = '0.2.8';
 
 const HOME = os.homedir();
 const CONFIG_DIR = path.join(HOME, '.config', 'agline');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const BURN_PATH = path.join(CONFIG_DIR, 'burn-state.json');
-const STATS_PATH = path.join(CONFIG_DIR, 'stats.json');
 
 const STDIN_MAX_BYTES = 1024 * 1024;
 const STDIN_OVERALL_MS = 2000;
@@ -27,8 +26,8 @@ const DEFAULTS = {
   maxWidth: null,
   contextWarning: 70,
   contextCritical: 85,
-  showStreak: true,
   showEta: true,
+  showBurnRate: true,
   showQuota: true,
   showSecondaryQuota: true,
   showGit: true,
@@ -140,7 +139,7 @@ function loadConfig() {
     const v = Number(cfg.maxWidth);
     if (Number.isFinite(v) && v > 0) out.maxWidth = v;
   }
-  for (const k of ['showStreak', 'showEta', 'showQuota', 'showSecondaryQuota', 'showGit']) {
+  for (const k of ['showEta', 'showBurnRate', 'showQuota', 'showSecondaryQuota', 'showGit']) {
     if (typeof cfg[k] === 'boolean') out[k] = cfg[k];
   }
   return out;
@@ -283,57 +282,31 @@ function computeEtaFromSamples(prevSamples, used, limit, now) {
   if (!cur || now - cur.t >= ETA_PUSH_MS) samples = samples.concat({ t: now, used });
   samples = samples.filter((s) => now - s.t <= ETA_WINDOW_MS);
 
-  if (samples.length < 2) return { eta: null, samples };
+  if (samples.length < 2) return { eta: null, rate: null, samples };
   const first = samples[0];
   const lastS = samples[samples.length - 1];
   const dtMin = (lastS.t - first.t) / 60000;
   const dUsed = lastS.used - first.used;
-  if (lastS.t - first.t < ETA_MIN_SPAN_MS || dUsed <= 0) return { eta: null, samples };
+  if (lastS.t - first.t < ETA_MIN_SPAN_MS || dUsed <= 0) return { eta: null, rate: null, samples };
   const rate = dUsed / dtMin; // tokens per minute
   const remaining = limit - used;
-  if (remaining <= 0) return { eta: null, samples };
-  return { eta: fmtEta(remaining / rate), samples };
+  const eta = remaining > 0 ? fmtEta(remaining / rate) : null;
+  return { eta, rate, samples };
 }
 
-function computeEta(used, limit) {
+function computeBurn(used, limit) {
   const state = readJson(BURN_PATH, {});
   const prevSamples = Array.isArray(state.samples) ? state.samples : [];
-  const { eta, samples } = computeEtaFromSamples(prevSamples, used, limit, Date.now());
+  const { eta, rate, samples } = computeEtaFromSamples(prevSamples, used, limit, Date.now());
   if (JSON.stringify(samples) !== JSON.stringify(prevSamples)) writeJson(BURN_PATH, { samples });
-  return eta;
+  return { eta, rate };
 }
 
-// ---------- streak ----------
-function localDateKey(d) {
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
-}
-
-// True consecutive-day streak: walk back from today (or from yesterday when
-// today is not recorded yet) while each day has an entry. Pure — `days` is a
-// list of local YYYY-MM-DD keys.
-function streakFromDays(days, now = new Date()) {
-  const set = new Set(days);
-  const cursor = new Date(now.getTime());
-  if (!set.has(localDateKey(cursor))) cursor.setDate(cursor.getDate() - 1);
-  let streak = 0;
-  while (set.has(localDateKey(cursor))) {
-    streak += 1;
-    cursor.setDate(cursor.getDate() - 1);
-  }
-  return streak;
-}
-
-function updateStreak() {
-  const stats = readJson(STATS_PATH, {});
-  let days = Array.isArray(stats.days) ? stats.days.filter((d) => typeof d === 'string') : [];
-  const today = localDateKey(new Date());
-  if (!days.includes(today)) {
-    days = days.concat(today).slice(-400);
-    writeJson(STATS_PATH, { days });
-  }
-  return streakFromDays(days);
+// tokens/min → a compact "tok/s" label (1.2k for thousands)
+function fmtRate(tokensPerMin) {
+  const s = Math.round(tokensPerMin / 60);
+  if (s >= 1000) return `${(s / 1000).toFixed(1)}k`;
+  return `${s}`;
 }
 
 // ---------- quota ----------
@@ -404,8 +377,8 @@ function quotaBlock(q, label, cfg, opts) {
 
 // ---------- line assembly ----------
 // buildLine is a pure layout function: everything with side effects or I/O
-// (git, ETA sampling, streak bookkeeping) is computed once in render() and
-// passed in via `fx`.
+// (git, burn-rate sampling) is computed once in render() and passed in via
+// `fx`.
 function buildLine(p, cfg, opts, fx) {
   const segs = [];
   const active = typeof p.agent_state === 'string' && p.agent_state !== '' && p.agent_state !== 'idle';
@@ -431,6 +404,7 @@ function buildLine(p, cfg, opts, fx) {
   );
 
   if (cfg.showEta && !opts.dropEta && fx.eta) segs.push(dim(`ETA ${fx.eta}`));
+  if (cfg.showBurnRate && !opts.dropRate && fx.rate) segs.push(dim(`${fmtRate(fx.rate)} tok/s`));
 
   if (fx.pct >= cfg.contextCritical) segs.push(esc(93, '⚠️ /compact'));
 
@@ -462,13 +436,6 @@ function buildLine(p, cfg, opts, fx) {
         }
       }
       if (blocks.length) segs.push(blocks.join(` ${dim('·')} `));
-    }
-  }
-
-  if (cfg.showStreak && !opts.dropStreak && fx.streakDays > 1) {
-    segs.push(dim(`★ ${fx.streakDays}d`));
-    if ([7, 30, 100, 365].includes(fx.streakDays)) {
-      segs.push(esc('1;95', `🏆 ${fx.streakDays} days with agline!`));
     }
   }
 
@@ -509,25 +476,26 @@ function render(p) {
   }
   if (used === null) used = (pct / 100) * limit;
 
+  const burn = cfg.showEta || cfg.showBurnRate ? computeBurn(used, limit) : { eta: null, rate: null };
   const fx = {
     modelName,
     wsBase,
     gi: cfg.showGit ? gitInfo(ws) : null,
     pct,
     pctLabel,
-    eta: cfg.showEta ? computeEta(used, limit) : null,
-    streakDays: cfg.showStreak ? updateStreak() : 0,
+    eta: cfg.showEta ? burn.eta : null,
+    rate: cfg.showBurnRate ? burn.rate : null,
   };
 
   const tw = Number(cfg.maxWidth ?? p.terminal_width);
   const effW = Math.max(40, (Number.isFinite(tw) && tw > 0 ? tw : 80) - 2);
   const attempts = [
     {},
-    { dropStreak: true },
-    { dropStreak: true, dropSecondary: true },
-    { dropStreak: true, dropSecondary: true, dropEta: true },
-    { dropStreak: true, dropSecondary: true, dropEta: true, dropWeekly: true },
-    { dropStreak: true, dropSecondary: true, dropEta: true, dropWeekly: true, dropCountdowns: true },
+    { dropRate: true },
+    { dropRate: true, dropSecondary: true },
+    { dropRate: true, dropSecondary: true, dropEta: true },
+    { dropRate: true, dropSecondary: true, dropEta: true, dropWeekly: true },
+    { dropRate: true, dropSecondary: true, dropEta: true, dropWeekly: true, dropCountdowns: true },
   ];
   let line = '';
   for (const opts of attempts) {
@@ -1041,10 +1009,11 @@ function validateConfig(cfg) {
     const v = Number(cfg.maxWidth);
     if (!(Number.isFinite(v) && v > 0)) invalid.push('maxWidth (want positive number or null)');
   }
-  for (const k of ['showStreak', 'showEta', 'showQuota', 'showSecondaryQuota', 'showGit']) {
+  for (const k of ['showEta', 'showBurnRate', 'showQuota', 'showSecondaryQuota', 'showGit']) {
     if (cfg[k] !== undefined && typeof cfg[k] !== 'boolean') invalid.push(`${k} (want boolean)`);
   }
-  const known = new Set([...Object.keys(DEFAULTS)]);
+  // showStreak was removed in 0.2.8 — tolerate it in existing configs silently.
+  const known = new Set([...Object.keys(DEFAULTS), 'showStreak']);
   for (const k of Object.keys(cfg)) {
     if (!known.has(k)) invalid.push(`${k} (unknown key)`);
   }
@@ -1196,7 +1165,7 @@ function cmdDoctor() {
     }
   }
 
-  // state dir writable (burn-state.json / stats.json live here)
+  // state dir writable (burn-state.json lives here)
   try {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });
     const probe = path.join(CONFIG_DIR, '.doctor-write-probe');
@@ -1250,9 +1219,9 @@ export {
   bar,
   fmtEta,
   fmtCountdown,
+  fmtRate,
   computeEtaFromSamples,
-  localDateKey,
-  streakFromDays,
+  computeBurn,
   selectQuotaFamily,
   quotaFamilies,
   quotaBlock,

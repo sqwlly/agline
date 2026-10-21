@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] - 2026-10-21
+
+### Added
+
+- **Burn-rate segment**: live token throughput (`317 tok/s`) computed from the same rolling burn-rate samples that drive the ETA — zero extra I/O. New config toggle `showBurnRate` (default `true`). It is the first segment to fold as the terminal narrows.
+
+### Removed
+
+- **Streak** (`★ Nd` + milestone trophies): gamification with zero decision value. The feature, its `showStreak` config key, `~/.config/agline/stats.json` bookkeeping and tests are gone; existing configs that still contain `showStreak` are silently tolerated (doctor does not flag it). Drop order is now: burn rate → secondary quota → ETA → weekly quota → countdowns.
+
 ## [0.2.7] - 2026-10-21
 
 ### Fixed

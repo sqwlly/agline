@@ -4,8 +4,8 @@
   "maxWidth": null,
   "contextWarning": 70,
   "contextCritical": 85,
-  "showStreak": true,
   "showEta": true,
+  "showBurnRate": true,
   "showQuota": true,
   "showSecondaryQuota": true,
   "showGit": true

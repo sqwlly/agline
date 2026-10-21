@@ -12,7 +12,7 @@ Inspired by agy-hud (MIT) by AllenMuu — rewritten from scratch for Antigravity
 ## What it shows
 
 ```
-[Gemini 4 Argon] │ veyra git:(main*) │ Context ▰▰▰░░░░░░░ 30% │ ETA 2h10m │ 5h ▰▰▰▰▰▱ 77% · 2h15m · Wk ▰▱▱▱▱▱ 10% · 3d4h │ ★ 12d
+[Gemini 4 Argon] │ veyra git:(main*) │ Context ▰▰▰░░░░░░░ 30% │ ETA 2h10m │ 317 tok/s │ 5h ▰▰▰▰▰▱ 77% · 2h15m · Wk ▰▱▱▱▱▱ 10% · 3d4h
 ```
 
 - **Spinner** (`◐ ◓ ◑ ◒`) while the agent is active
@@ -21,9 +21,9 @@ Inspired by agy-hud (MIT) by AllenMuu — rewritten from scratch for Antigravity
 - **Context** bar from `context_window.used_percentage` (green → yellow at `contextWarning` → red at `contextCritical`, plus `⚠ /compact` at critical)
 - **ETA** to context exhaustion from a rolling burn-rate (`~/.config/agline/burn-state.json`)
 - **Quota** 5h / weekly buckets with reset countdowns. The current model's family leads (`5h`/`Wk`); when the payload carries the other family too, it rides along in compact tagged form (`3p5h`/`3pWk` or `G5h`/`GWk`, no countdowns — disable via `showSecondaryQuota`)
-- **Streak** of *consecutive* usage days in your local timezone (`~/.config/agline/stats.json`) + milestone trophies at 7/30/100/365 days
+- **Burn rate** — live token throughput (`317 tok/s`) from the same rolling samples as the ETA
 
-Segments drop progressively (streak → secondary quota family → ETA → weekly quota → countdowns → `…` truncation) to fit the terminal width. Percentages render at natural width with a single space (`9%`, `45%`, `100%`), and countdowns are compact (`2h46m`, `3d4h`). ANSI-aware: never cuts inside an escape sequence. Respects `NO_COLOR`.
+Segments drop progressively (burn rate → secondary quota family → ETA → weekly quota → countdowns → `…` truncation) to fit the terminal width. Percentages render at natural width with a single space (`9%`, `45%`, `100%`), and countdowns are compact (`2h46m`, `3d4h`). ANSI-aware: never cuts inside an escape sequence. Respects `NO_COLOR`.
 
 ## Install
 
@@ -124,8 +124,8 @@ is broken (0 otherwise). No network calls.
   "maxWidth": null,
   "contextWarning": 70,
   "contextCritical": 85,
-  "showStreak": true,
   "showEta": true,
+  "showBurnRate": true,
   "showQuota": true,
   "showSecondaryQuota": true,
   "showGit": true
@@ -135,7 +135,7 @@ is broken (0 otherwise). No network calls.
 - `barWidth` / `quotaBarWidth` — cells in the context / quota bars (`▰`/`▱`)
 - `maxWidth` — hard cap for the rendered line; `null` uses `terminal_width` from the payload (fallback 80), minus 2, floor 40
 - `contextWarning` / `contextCritical` — percent thresholds for yellow / red (and `⚠ /compact`)
-- `showStreak` / `showEta` / `showQuota` / `showGit` — segment toggles
+- `showEta` / `showBurnRate` / `showQuota` / `showGit` — segment toggles
 - `showSecondaryQuota` — also show the *other* quota family in compact tagged form (`3p5h`/`3pWk` while on Gemini, `G5h`/`GWk` while on a third-party model)
 
 ## Files
@@ -147,7 +147,6 @@ is broken (0 otherwise). No network calls.
 | `~/.local/bin/agline` | command shim → `~/.local/share/agline/agline.mjs` (POSIX; created by install, removed by uninstall). On Windows: `agline.cmd` in `%APPDATA%\npm` or `%USERPROFILE%\.local\bin` |
 | `~/.config/agline/config.json` | runtime config (not in repo) |
 | `~/.config/agline/burn-state.json` | ETA burn-rate samples (runtime) |
-| `~/.config/agline/stats.json` | usage-day streak (runtime) |
 
 ## Development
 
