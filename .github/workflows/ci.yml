@@ -8,11 +8,20 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         node: [18, 20, 22]
+        include:
+          # Real Windows runs: the win32 shim (.cmd marker wrapper) and the
+          # USERPROFILE/APPDATA home redirection only execute for real there;
+          # POSIX-only symlink tests self-skip via { skip: IS_WIN }.
+          - os: windows-latest
+            node: 20
+          - os: windows-latest
+            node: 22
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -3,6 +3,22 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2026-10-21
+
+### Fixed
+
+- **Uninstall no longer restores `settings.json.bak` wholesale.** The old behavior copied the entire pre-install backup back over `settings.json`, silently reverting every unrelated setting the user had changed since installing agline. Restore is now field-level: only the `statusLine` field is set back to its pre-install value, everything else — including keys added or edited after install — is preserved exactly.
+- Reinstalling over agline (upgrade) no longer turns the rollback target into agline itself: the pre-agline `statusLine` is recorded in `~/.config/agline/install-receipt.json` on first install and kept on reinstall (legacy receipt-less installs recover it from the `.bak`). A restore candidate pointing at agline itself is coerced to field removal.
+- A corrupt `settings.json` is now refused cleanly by both install and uninstall (exit 1, file byte-identical, evidence paths printed) instead of crashing with a raw `JSON.parse` stack.
+- When another tool has taken over the `statusLine` field, uninstall leaves `settings.json` completely untouched (previously it aborted with exit 1 before removing agline's own files) — it now warns, skips the settings, and still removes the share dir and shim.
+- settings.json writes are atomic (temp file + rename, permissions preserved), so an interrupted write can no longer leave a truncated config behind.
+
+### Added
+
+- `agline doctor` warns when the install receipt is missing (uninstall would fall back to the `.bak` field; fixed by re-running `agline install`).
+- Regression suite for the settings lifecycle (temp-HOME CLI end-to-end): post-install edits survive uninstall, field-level restore from receipt / `.bak` / none, external statusLine takeover, corrupt settings refusal, upgrade rollback stability, dead-pointer coercion.
+- Real Windows CI: the matrix gains `windows-latest` on Node 20/22; POSIX-only symlink tests self-skip, and a win32 end-to-end test exercises the marker-tagged `.cmd` shim, `doctor`, and uninstall for real.
+
 ## [0.2.6] - 2026-10-21
 
 ### Added

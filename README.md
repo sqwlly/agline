@@ -53,10 +53,13 @@ This creates `~/.config/agline/config.json` (from built-in defaults, if missing)
 
 (with the actual home path expanded).
 
-All other settings are preserved (JSON round-trip, indent 2). Before overwriting, the current
-`settings.json` is copied to `settings.json.bak` (an existing `.bak` is kept — the oldest backup
-wins). The installer also prints the previous `statusLine` value as a rollback command, refuses
-to touch a `settings.json` that is not a JSON object, and is idempotent on re-run.
+All other settings are preserved (JSON round-trip, indent 2, atomic temp-then-rename write that
+keeps the file's permissions). The pre-agline `statusLine` value is recorded field-level in
+`~/.config/agline/install-receipt.json` — on reinstall over agline the original record is kept
+(legacy receipt-less installs recover it from the `.bak`), so the rollback target never becomes
+agline itself. The current `settings.json` is also copied to `settings.json.bak` as human
+evidence (an existing `.bak` is kept — the oldest wins; it is never restored wholesale). The
+installer refuses to touch a `settings.json` that is not valid JSON, and is idempotent on re-run.
 
 ## Uninstall
 
@@ -64,11 +67,16 @@ to touch a `settings.json` that is not a JSON object, and is idempotent on re-ru
 agline uninstall        # or: npx @sqwlly/agline uninstall
 ```
 
-If agline's statusLine is active, this restores `settings.json.bak` when present (otherwise
-deletes just the `statusLine` key), then removes `~/.local/share/agline` and the
-`~/.local/bin/agline` shim (only when it is agline's own symlink; foreign files are left alone).
-If the statusLine points at something else, it refuses and prints the current value. Your config
-in `~/.config/agline/` is kept; delete it manually if unwanted.
+Restore is **field-level**: if agline's statusLine is active, only that one field is set back to
+its pre-install value (from the install receipt, falling back to the `statusLine` field inside
+`settings.json.bak`, falling back to simply removing the field agline added). Every other key —
+including ones you edited *after* installing agline — is left exactly as-is. A restore candidate
+pointing at agline itself is coerced to removal, and a corrupt `settings.json` is refused
+byte-for-byte with the evidence paths printed. If the statusLine now belongs to another tool, it
+is left untouched (agline's own files are still removed). Then `~/.local/share/agline` and the
+`~/.local/bin/agline` shim are removed (only when it is agline's own; foreign files are left
+alone). The receipt, the `.bak`, and your config in `~/.config/agline/` are kept for manual
+recovery; delete them manually if unwanted.
 
 ## Windows (best-effort)
 

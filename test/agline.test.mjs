@@ -11,6 +11,11 @@ import { fileURLToPath } from 'node:url';
 
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agline-test-'));
 process.env.HOME = tmpHome;
+if (process.platform === 'win32') {
+  // os.homedir() on Windows ignores $HOME — redirect the vars it does read.
+  process.env.USERPROFILE = tmpHome;
+  process.env.APPDATA = path.join(tmpHome, 'AppData', 'Roaming');
+}
 delete process.env.NO_COLOR;
 
 const {
@@ -423,6 +428,20 @@ test('showSecondaryQuota: false hides the other family even on a wide terminal',
 
 // ---------- install/uninstall shim (CLI end-to-end, temp HOME per case) ----------
 const CLI = fileURLToPath(new URL('../agline.mjs', import.meta.url));
+const IS_WIN = process.platform === 'win32';
+
+// os.homedir() reads $HOME on POSIX but $USERPROFILE on Windows — set both so
+// the CLI child is fully redirected into the temp home on every platform.
+// APPDATA is redirected too so the win32 shim-dir probe never touches the
+// real npm global prefix.
+function homeEnv(home) {
+  const env = { HOME: home };
+  if (IS_WIN) {
+    env.USERPROFILE = home;
+    env.APPDATA = path.join(home, 'AppData', 'Roaming');
+  }
+  return env;
+}
 
 function cliHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'agline-cli-'));
@@ -431,27 +450,42 @@ function cliHome() {
 function runCli(home, args, extraEnv = {}) {
   return spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, HOME: home, NO_COLOR: '1', ...extraEnv },
+    env: { ...process.env, ...homeEnv(home), NO_COLOR: '1', ...extraEnv },
   });
 }
 
 const shimPathOf = (home) => path.join(home, '.local', 'bin', 'agline');
 const sharePathOf = (home) => path.join(home, '.local', 'share', 'agline', 'agline.mjs');
+const shareDirOf = (home) => path.join(home, '.local', 'share', 'agline');
+const settingsPathOf = (home) => path.join(home, '.gemini', 'antigravity-cli', 'settings.json');
+const receiptPathOf = (home) => path.join(home, '.config', 'agline', 'install-receipt.json');
+const writeSettings = (home, obj) => {
+  fs.mkdirSync(path.dirname(settingsPathOf(home)), { recursive: true });
+  fs.writeFileSync(settingsPathOf(home), JSON.stringify(obj, null, 2) + '\n');
+};
+const readSettingsOf = (home) => JSON.parse(fs.readFileSync(settingsPathOf(home), 'utf8'));
 
-test('install symlinks ~/.local/bin/agline -> the installed copy, and the shim runs', () => {
-  const home = cliHome();
-  const r = runCli(home, ['install']);
-  assert.equal(r.status, 0, r.stderr);
-  const shim = shimPathOf(home);
-  assert.ok(fs.lstatSync(shim).isSymbolicLink(), 'shim is a symlink');
-  assert.equal(fs.readlinkSync(shim), sharePathOf(home));
-  assert.ok(r.stdout.includes(shim), 'summary lists the command row');
-  const v = spawnSync(shim, ['--version'], { encoding: 'utf8', env: { ...process.env, HOME: home } });
-  assert.equal(v.status, 0, v.stderr);
-  assert.match(v.stdout.trim(), /^\d+\.\d+\.\d+$/);
-});
+test(
+  'install symlinks ~/.local/bin/agline -> the installed copy, and the shim runs',
+  { skip: IS_WIN && 'POSIX symlink shim' },
+  () => {
+    const home = cliHome();
+    const r = runCli(home, ['install']);
+    assert.equal(r.status, 0, r.stderr);
+    const shim = shimPathOf(home);
+    assert.ok(fs.lstatSync(shim).isSymbolicLink(), 'shim is a symlink');
+    assert.equal(fs.readlinkSync(shim), sharePathOf(home));
+    assert.ok(r.stdout.includes(shim), 'summary lists the command row');
+    const v = spawnSync(shim, ['--version'], {
+      encoding: 'utf8',
+      env: { ...process.env, ...homeEnv(home) },
+    });
+    assert.equal(v.status, 0, v.stderr);
+    assert.match(v.stdout.trim(), /^\d+\.\d+\.\d+$/);
+  }
+);
 
-test('re-running install over a correct symlink is a no-op success', () => {
+test('re-running install over a correct symlink is a no-op success', { skip: IS_WIN && 'POSIX symlink shim' }, () => {
   const home = cliHome();
   assert.equal(runCli(home, ['install']).status, 0);
   const shim = shimPathOf(home);
@@ -462,7 +496,7 @@ test('re-running install over a correct symlink is a no-op success', () => {
   assert.equal(fs.lstatSync(shim).mtimeMs, before.mtimeMs, 'symlink untouched on re-run');
 });
 
-test('install never clobbers a foreign file at the shim path', () => {
+test('install never clobbers a foreign file at the shim path', { skip: IS_WIN && 'POSIX symlink shim' }, () => {
   const home = cliHome();
   const shim = shimPathOf(home);
   fs.mkdirSync(path.dirname(shim), { recursive: true });
@@ -474,7 +508,7 @@ test('install never clobbers a foreign file at the shim path', () => {
   assert.ok(r.stdout.includes('skipped'), 'summary notes the skip');
 });
 
-test('uninstall removes the shim, but only when it is agline’s own symlink', () => {
+test('uninstall removes the shim, but only when it is agline’s own symlink', { skip: IS_WIN && 'POSIX symlink shim' }, () => {
   const home = cliHome();
   assert.equal(runCli(home, ['install']).status, 0);
   const r = runCli(home, ['uninstall']);
@@ -491,21 +525,38 @@ test('uninstall removes the shim, but only when it is agline’s own symlink', (
   assert.equal(fs.readFileSync(foreign, 'utf8'), 'foreign\n', 'foreign file survives uninstall');
 });
 
-test('doctor reports the shim: healthy after install, missing before, PATH absence is a warning', () => {
+test(
+  'doctor reports the shim: healthy after install, missing before, PATH absence is a warning',
+  { skip: IS_WIN && 'POSIX shim messages' },
+  () => {
+    const home = cliHome();
+    const before = runCli(home, ['doctor']);
+    assert.equal(before.status, 1, 'no install → doctor fails');
+    assert.ok(before.stdout.includes('command shim missing'));
+
+    assert.equal(runCli(home, ['install']).status, 0);
+    const after = runCli(home, ['doctor']);
+    assert.equal(after.status, 0, after.stdout);
+    assert.ok(after.stdout.includes(`command shim ${shimPathOf(home)}`));
+
+    const noPath = runCli(home, ['doctor'], { PATH: '/usr/bin:/bin' });
+    assert.equal(noPath.status, 0, `PATH absence warns but does not fail:\n${noPath.stdout}`);
+    assert.ok(noPath.stdout.includes('! '), 'warning marker printed');
+    assert.ok(noPath.stdout.includes('is not on PATH'));
+  }
+);
+
+test('win32 end-to-end: install writes a marker .cmd shim, doctor passes, uninstall removes it', { skip: !IS_WIN && 'needs Windows' }, () => {
   const home = cliHome();
-  const before = runCli(home, ['doctor']);
-  assert.equal(before.status, 1, 'no install → doctor fails');
-  assert.ok(before.stdout.includes('command shim missing'));
-
-  assert.equal(runCli(home, ['install']).status, 0);
-  const after = runCli(home, ['doctor']);
-  assert.equal(after.status, 0, after.stdout);
-  assert.ok(after.stdout.includes(`command shim ${shimPathOf(home)}`));
-
-  const noPath = runCli(home, ['doctor'], { PATH: '/usr/bin:/bin' });
-  assert.equal(noPath.status, 0, `PATH absence warns but does not fail:\n${noPath.stdout}`);
-  assert.ok(noPath.stdout.includes('! '), 'warning marker printed');
-  assert.ok(noPath.stdout.includes('is not on PATH'));
+  const r = runCli(home, ['install']);
+  assert.equal(r.status, 0, r.stderr);
+  const cmd = path.join(home, '.local', 'bin', 'agline.cmd');
+  assert.ok(fs.readFileSync(cmd, 'utf8').includes(':: agline shim'), 'marker-tagged .cmd written');
+  const d = runCli(home, ['doctor']);
+  assert.equal(d.status, 0, d.stdout);
+  const u = runCli(home, ['uninstall']);
+  assert.equal(u.status, 0, u.stderr);
+  assert.ok(!fs.existsSync(cmd), '.cmd shim removed');
 });
 
 // ---------- Windows (win32) shim logic — pure functions, testable on Linux ----------
@@ -608,9 +659,135 @@ test('--record appends the raw payload to a file and still renders', () => {
   const r = spawnSync(process.execPath, [CLI, '--record', log], {
     encoding: 'utf8',
     input: payload,
-    env: { ...process.env, HOME: home, NO_COLOR: '1' },
+    env: { ...process.env, ...homeEnv(home), NO_COLOR: '1' },
   });
   assert.equal(r.status, 0, r.stderr);
   assert.ok(r.stdout.includes('[Claude Sonnet 4.5]'), 'renders the statusline');
   assert.equal(fs.readFileSync(log, 'utf8').trim(), payload, 'raw payload captured verbatim');
+});
+
+// ---------- settings.json field-level restore (the 0.2.7 hardening) ----------
+const OLD_SL = { type: 'command', command: 'sh /home/u/old-statusline.sh', enabled: true };
+
+test('core regression: uninstall restores only statusLine, preserving post-install edits to other keys', () => {
+  const home = cliHome();
+  writeSettings(home, { theme: 'dark', statusLine: OLD_SL });
+  assert.equal(runCli(home, ['install']).status, 0);
+  // the user tweaks unrelated settings while agline is installed
+  const edited = readSettingsOf(home);
+  edited.theme = 'light';
+  edited.newKey = { added: 'later' };
+  writeSettings(home, edited);
+
+  const u = runCli(home, ['uninstall']);
+  assert.equal(u.status, 0, u.stderr);
+  const after = readSettingsOf(home);
+  assert.deepEqual(after.statusLine, OLD_SL, 'statusLine restored to the pre-install value');
+  assert.equal(after.theme, 'light', 'post-install edit survives — the .bak is NOT restored wholesale');
+  assert.deepEqual(after.newKey, { added: 'later' }, 'keys added after install survive');
+  assert.ok(fs.existsSync(receiptPathOf(home)), 'receipt kept as manual-recovery evidence');
+});
+
+test('uninstall removes a statusLine agline added, keeping other keys', () => {
+  const home = cliHome();
+  writeSettings(home, { a: 1 });
+  assert.equal(runCli(home, ['install']).status, 0);
+  assert.equal(runCli(home, ['uninstall']).status, 0);
+  const after = readSettingsOf(home);
+  assert.ok(!('statusLine' in after), 'field added by agline is removed');
+  assert.equal(after.a, 1);
+});
+
+test('reinstall (upgrade) keeps the ORIGINAL rollback target, not agline itself', () => {
+  const home = cliHome();
+  writeSettings(home, { statusLine: OLD_SL, x: 1 });
+  assert.equal(runCli(home, ['install']).status, 0);
+  let s = readSettingsOf(home);
+  s.x = 2;
+  writeSettings(home, s);
+  assert.equal(runCli(home, ['install']).status, 0, 'upgrade reinstall');
+  s = readSettingsOf(home);
+  s.x = 3;
+  writeSettings(home, s);
+
+  assert.equal(runCli(home, ['uninstall']).status, 0);
+  const after = readSettingsOf(home);
+  assert.deepEqual(after.statusLine, OLD_SL, 'rolls back to the pre-agline tool, never to agline');
+  assert.equal(after.x, 3, 'latest edits preserved');
+});
+
+test('external tool took over statusLine: uninstall leaves settings untouched but still removes its own files', () => {
+  const home = cliHome();
+  writeSettings(home, { theme: 'dark' });
+  assert.equal(runCli(home, ['install']).status, 0);
+  const s = readSettingsOf(home);
+  s.statusLine = { type: 'command', command: 'node /other/tool.mjs', enabled: true };
+  writeSettings(home, s);
+
+  const u = runCli(home, ['uninstall']);
+  assert.equal(u.status, 0, 'warning, not a hard failure');
+  assert.ok(u.stdout.includes('another tool'), 'explains the skip');
+  const after = readSettingsOf(home);
+  assert.equal(after.statusLine.command, 'node /other/tool.mjs', 'foreign statusLine untouched');
+  assert.ok(!fs.existsSync(shareDirOf(home)), 'agline share dir still removed');
+});
+
+test('legacy path: receipt missing but .bak present → restore only the statusLine field from the .bak', () => {
+  const home = cliHome();
+  // simulate a 0.2.6-era install: whole-file .bak exists, no receipt
+  writeSettings(home, { statusLine: { type: 'command', command: 'node /x/agline.mjs', enabled: true }, other: 'new' });
+  fs.writeFileSync(`${settingsPathOf(home)}.bak`, JSON.stringify({ statusLine: OLD_SL, other: 'old' }, null, 2));
+
+  assert.equal(runCli(home, ['uninstall']).status, 0);
+  const after = readSettingsOf(home);
+  assert.deepEqual(after.statusLine, OLD_SL, 'statusLine field restored from the .bak');
+  assert.equal(after.other, 'new', 'current other keys win over the stale .bak');
+});
+
+test('receipt/backup unusable: statusLine removed, other keys preserved, never a destructive overwrite', () => {
+  const home = cliHome();
+  writeSettings(home, { statusLine: { type: 'command', command: 'node /x/agline.mjs', enabled: true }, k: 'v' });
+  fs.writeFileSync(`${settingsPathOf(home)}.bak`, 'not json{');
+
+  const u = runCli(home, ['uninstall']);
+  assert.equal(u.status, 0, u.stderr);
+  const after = readSettingsOf(home);
+  assert.ok(!('statusLine' in after), 'agline field removed');
+  assert.equal(after.k, 'v', 'other settings preserved');
+});
+
+test('a restore candidate pointing at agline itself is coerced to removal', () => {
+  const home = cliHome();
+  const aglineSl = { type: 'command', command: 'node /x/agline.mjs', enabled: true };
+  writeSettings(home, { statusLine: aglineSl, k: 1 });
+  // .bak whose statusLine also points at agline (a stale double-install artifact)
+  fs.writeFileSync(`${settingsPathOf(home)}.bak`, JSON.stringify({ statusLine: aglineSl }, null, 2));
+
+  assert.equal(runCli(home, ['uninstall']).status, 0);
+  const after = readSettingsOf(home);
+  assert.ok(!('statusLine' in after), 'never resurrect a dead agline pointer');
+  assert.equal(after.k, 1);
+});
+
+test('corrupt settings.json: uninstall refuses and leaves the file byte-identical', () => {
+  const home = cliHome();
+  fs.mkdirSync(path.dirname(settingsPathOf(home)), { recursive: true });
+  fs.writeFileSync(settingsPathOf(home), 'garbage{');
+  const before = fs.readFileSync(settingsPathOf(home), 'utf8');
+
+  const u = runCli(home, ['uninstall']);
+  assert.equal(u.status, 1, 'hard refusal');
+  assert.ok(u.stderr.includes('not valid JSON'));
+  assert.equal(fs.readFileSync(settingsPathOf(home), 'utf8'), before, 'file untouched');
+});
+
+test('corrupt settings.json: install also refuses to overwrite', () => {
+  const home = cliHome();
+  fs.mkdirSync(path.dirname(settingsPathOf(home)), { recursive: true });
+  fs.writeFileSync(settingsPathOf(home), 'garbage{');
+
+  const r = runCli(home, ['install']);
+  assert.equal(r.status, 1, 'hard refusal');
+  assert.ok(r.stderr.includes('not valid JSON'));
+  assert.equal(fs.readFileSync(settingsPathOf(home), 'utf8'), 'garbage{', 'file untouched');
 });

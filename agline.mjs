@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.2.6';
+const VERSION = '0.2.7';
 
 const HOME = os.homedir();
 const CONFIG_DIR = path.join(HOME, '.config', 'agline');
@@ -626,6 +626,11 @@ const SHARE_PATH = path.join(SHARE_DIR, 'agline.mjs');
 const BIN_DIR = path.join(HOME, '.local', 'bin');
 const SHIM_PATH = path.join(BIN_DIR, 'agline');
 const SETTINGS_PATH = path.join(HOME, '.gemini', 'antigravity-cli', 'settings.json');
+// Field-level record of the statusLine state from BEFORE agline first patched
+// it, so uninstall can restore exactly that field without touching anything
+// else in settings.json. The legacy settings.json.bak is kept as human
+// evidence only — never restored wholesale.
+const RECEIPT_PATH = path.join(CONFIG_DIR, 'install-receipt.json');
 
 const IS_WIN32 = process.platform === 'win32';
 // Marker line inside the generated agline.cmd so install/doctor/uninstall can
@@ -785,16 +790,68 @@ function statusLineTarget(command) {
   return String(command).trim().split(/\s+/).pop();
 }
 
-function readSettings(strict) {
-  if (!fs.existsSync(SETTINGS_PATH)) return { settings: {}, existed: false };
-  const raw = fs.readFileSync(SETTINGS_PATH, 'utf8');
-  const settings = JSON.parse(raw);
-  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
-    const kind = Array.isArray(settings) ? 'array' : settings === null ? 'null' : typeof settings;
-    if (strict) fail(`${SETTINGS_PATH} is not a JSON object (got ${kind}); refusing to overwrite`);
-    return { settings: null, existed: true };
+function readSettings() {
+  if (!fs.existsSync(SETTINGS_PATH)) return { settings: {}, existed: false, corrupt: false };
+  let settings;
+  try {
+    settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+  } catch {
+    return { settings: null, existed: true, corrupt: true };
   }
-  return { settings, existed: true };
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+    return { settings: null, existed: true, corrupt: true };
+  }
+  return { settings, existed: true, corrupt: false };
+}
+
+function isAglineStatusLine(sl) {
+  return !!sl && typeof sl === 'object' && typeof sl.command === 'string' && sl.command.includes('agline');
+}
+
+// Write temp-then-rename so a crash mid-write can never leave a truncated
+// settings.json behind. `mode` preserves the existing file's permissions.
+function writeFileAtomic(p, text, mode) {
+  const tmp = `${p}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, text);
+  if (mode !== undefined) {
+    try {
+      fs.chmodSync(tmp, mode);
+    } catch {
+      /* best effort */
+    }
+  }
+  fs.renameSync(tmp, p);
+}
+
+function writeSettingsAtomic(settings, existed) {
+  let mode = 0o600;
+  if (existed) {
+    try {
+      mode = fs.statSync(SETTINGS_PATH).mode;
+    } catch {
+      /* keep default */
+    }
+  }
+  writeFileAtomic(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n', mode);
+}
+
+// The statusLine value to hand back on uninstall. Precedence: the install
+// receipt (definite record of the pre-agline state), then the statusLine
+// field extracted from the legacy whole-file .bak, then null (= agline added
+// the field, so it should simply go away). A value pointing at agline itself
+// is coerced to null — restoring it would resurrect a dead pointer.
+function preAglineStatusLine() {
+  const receipt = readJson(RECEIPT_PATH, null);
+  if (receipt && typeof receipt === 'object' && !Array.isArray(receipt) && 'previousStatusLine' in receipt) {
+    const v = receipt.previousStatusLine ?? null;
+    return { value: isAglineStatusLine(v) ? null : v, source: 'receipt' };
+  }
+  const bak = readJson(`${SETTINGS_PATH}.bak`, null);
+  if (bak && typeof bak === 'object' && !Array.isArray(bak)) {
+    const v = bak.statusLine ?? null;
+    return { value: isAglineStatusLine(v) ? null : v, source: 'settings.json.bak field' };
+  }
+  return { value: null, source: null };
 }
 
 function cmdInstall() {
@@ -816,7 +873,12 @@ function cmdInstall() {
     }
   }
 
-  const { settings, existed } = readSettings(true);
+  const { settings, existed, corrupt } = readSettings();
+  if (corrupt) {
+    fail(
+      `${SETTINGS_PATH} is not valid JSON — refusing to overwrite it. Fix or remove the file manually, then re-run: agline install`
+    );
+  }
   if (!existed) fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
 
   const bak = `${SETTINGS_PATH}.bak`;
@@ -824,22 +886,32 @@ function cmdInstall() {
   if (existed) {
     if (!fs.existsSync(bak)) {
       fs.copyFileSync(SETTINGS_PATH, bak);
-      backupNote = 'written';
+      backupNote = 'written (evidence only — restore is field-level)';
     } else {
-      backupNote = 'already exists, oldest kept';
+      backupNote = 'already exists, oldest kept (evidence only)';
     }
   }
 
+  // Record the pre-agline statusLine field-level. On reinstall over agline
+  // keep the original record (migrating legacy receipt-less installs from
+  // the .bak when possible) so the rollback target never becomes agline
+  // itself; when another tool owns the field, that tool becomes the target.
   const prev = settings.statusLine;
-  settings.statusLine = { type: 'command', command: statusLineCommand(), enabled: true };
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
-  if (!existed) {
-    try {
-      fs.chmodSync(SETTINGS_PATH, 0o600);
-    } catch {
-      /* best effort */
-    }
+  let previousStatusLine;
+  if (isAglineStatusLine(prev)) {
+    previousStatusLine = preAglineStatusLine().value;
+  } else {
+    previousStatusLine = prev ?? null;
   }
+  writeJson(RECEIPT_PATH, {
+    version: VERSION,
+    installedAt: new Date().toISOString(),
+    settingsPath: SETTINGS_PATH,
+    previousStatusLine,
+  });
+
+  settings.statusLine = { type: 'command', command: statusLineCommand(), enabled: true };
+  writeSettingsAtomic(settings, existed);
 
   const shimResult = installShim();
   const { path: shimPath, dir: shimDir, npmPrefix } = shimInfo();
@@ -890,30 +962,39 @@ function cmdInstall() {
   console.log(`  ${dim('·')} edit config.json     tweak bars, thresholds, toggles`);
   console.log(`  ${dim('·')} agline uninstall     restore previous statusLine`);
   console.log('');
-  console.log(`${dim('Previous statusLine (rollback):')} ${prev === undefined ? 'none' : JSON.stringify(prev)}`);
+  console.log(
+    `${dim('Rollback target (saved):')} ${previousStatusLine === null ? 'none' : JSON.stringify(previousStatusLine)} ${dim(`→ ${RECEIPT_PATH}`)}`
+  );
 }
 
 function cmdUninstall() {
-  const { settings, existed } = readSettings(false);
-  if (settings === null) {
-    fail(`${SETTINGS_PATH} is not a JSON object; refusing to touch it`);
+  const { settings, existed, corrupt } = readSettings();
+  if (corrupt) {
+    console.error(`agline: ${SETTINGS_PATH} is not valid JSON — refusing to touch it.`);
+    console.error('  fix it manually; recovery evidence is kept at:');
+    console.error(`    ${RECEIPT_PATH}`);
+    console.error(`    ${SETTINGS_PATH}.bak`);
+    process.exit(1);
   }
   let settingsNote = 'no agline statusLine found (untouched)';
+  let evidenceKept = false;
   if (existed && settings.statusLine != null) {
-    const cmd = settings.statusLine?.command;
-    if (typeof cmd !== 'string' || !cmd.includes('agline')) {
-      console.error(`agline: statusLine points elsewhere; refusing to modify settings.`);
-      console.error(`  current statusLine = ${JSON.stringify(settings.statusLine)}`);
-      process.exit(1);
-    }
-    const bak = `${SETTINGS_PATH}.bak`;
-    if (fs.existsSync(bak)) {
-      fs.copyFileSync(bak, SETTINGS_PATH);
-      settingsNote = 'restored from backup';
+    if (!isAglineStatusLine(settings.statusLine)) {
+      // Another tool owns the field now — never clobber it. Removing our own
+      // files below is still safe: agline is not the active statusline.
+      settingsNote = `left untouched — statusLine belongs to another tool (${JSON.stringify(settings.statusLine)})`;
     } else {
-      delete settings.statusLine;
-      fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
-      settingsNote = 'statusLine removed, no backup to restore';
+      const { value, source } = preAglineStatusLine();
+      if (value === null) delete settings.statusLine;
+      else settings.statusLine = value;
+      writeSettingsAtomic(settings, existed);
+      evidenceKept = true;
+      settingsNote =
+        value === null
+          ? source
+            ? `statusLine removed (pre-install state: none, via ${source}); other settings preserved`
+            : 'statusLine removed (no receipt/backup; other settings preserved)'
+          : `statusLine restored to pre-install value (via ${source}); other settings preserved`;
     }
   }
   const shimRemoved = removeShim();
@@ -932,6 +1013,10 @@ function cmdUninstall() {
     shimRemoved ? 'shim removed' : 'no agline shim found (foreign files are left alone)'
   );
   row('config', CONFIG_DIR, 'kept — delete manually if unwanted');
+  if (evidenceKept) {
+    row('evidence', RECEIPT_PATH, 'kept for manual recovery');
+    console.log(`  ${dim('')} ${dim(`${SETTINGS_PATH}.bak`)}`);
+  }
 }
 
 function validateConfig(cfg) {
@@ -1063,6 +1148,11 @@ function cmdDoctor() {
           bad(`statusLine target does not exist: ${target}`);
         } else if (sl.enabled === true) {
           ok(`statusLine -> ${target} (enabled)`);
+          if (!fs.existsSync(RECEIPT_PATH)) {
+            warn(
+              `install receipt missing: ${RECEIPT_PATH} — uninstall falls back to the .bak statusLine field; re-run: agline install`
+            );
+          }
         } else {
           bad(`statusLine -> ${target} but enabled is not true`);
         }
