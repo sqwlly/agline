@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 
 const HOME = os.homedir();
 const CONFIG_DIR = path.join(HOME, '.config', 'agline');
@@ -565,11 +565,65 @@ async function main() {
 // plain `node` on a local file instead of paying npm spawn overhead.
 const SHARE_DIR = path.join(HOME, '.local', 'share', 'agline');
 const SHARE_PATH = path.join(SHARE_DIR, 'agline.mjs');
+const BIN_DIR = path.join(HOME, '.local', 'bin');
+const SHIM_PATH = path.join(BIN_DIR, 'agline');
 const SETTINGS_PATH = path.join(HOME, '.gemini', 'antigravity-cli', 'settings.json');
 
 function fail(msg) {
   console.error(`agline: ${msg}`);
   process.exit(1);
+}
+
+// If `p` is a symlink, return its fully-resolved target path, else null.
+function symlinkTarget(p) {
+  try {
+    const st = fs.lstatSync(p);
+    if (!st.isSymbolicLink()) return null;
+    return path.resolve(path.dirname(p), fs.readlinkSync(p));
+  } catch {
+    return null;
+  }
+}
+
+function binDirOnPath() {
+  return (process.env.PATH || '')
+    .split(path.delimiter)
+    .some((p) => p === BIN_DIR);
+}
+
+// Symlink ~/.local/bin/agline -> ~/.local/share/agline/agline.mjs so the
+// `agline` command works after install. Returns one of:
+//   'already-ok'      correct symlink in place, nothing done
+//   'created'         shim created (or a stale symlink re-pointed)
+//   'skipped-foreign' a real file occupies the path — never clobbered
+function installShim() {
+  const resolved = symlinkTarget(SHIM_PATH);
+  if (resolved === SHARE_PATH) return 'already-ok';
+  const isSymlink = resolved !== null;
+  let exists = isSymlink;
+  if (!exists) {
+    try {
+      fs.lstatSync(SHIM_PATH);
+      exists = true;
+    } catch {
+      /* absent */
+    }
+  }
+  if (exists && !isSymlink) return 'skipped-foreign';
+  fs.mkdirSync(BIN_DIR, { recursive: true });
+  if (isSymlink) fs.rmSync(SHIM_PATH, { force: true });
+  fs.symlinkSync(SHARE_PATH, SHIM_PATH);
+  return 'created';
+}
+
+// Remove the shim only when it is a symlink pointing into our share dir;
+// foreign files are left alone. Returns true when something was removed.
+function removeShim() {
+  const resolved = symlinkTarget(SHIM_PATH);
+  if (resolved === null) return false;
+  if (resolved !== SHARE_PATH && !resolved.startsWith(SHARE_DIR + path.sep)) return false;
+  fs.rmSync(SHIM_PATH, { force: true });
+  return true;
 }
 
 function selfPath() {
@@ -632,15 +686,30 @@ function cmdInstall() {
     }
   }
 
+  const shimResult = installShim();
+  const shimNote =
+    shimResult === 'already-ok'
+      ? 'already current — agline doctor, uninstall, ...'
+      : shimResult === 'created'
+        ? 'symlinked — agline doctor, uninstall, ...'
+        : 'skipped — a non-agline file already exists there';
+  const onPath = binDirOnPath();
+
   const row = (label, value, note) =>
     console.log(`  ${dim(label.padEnd(11))} ${value}${note ? dim(` (${note})`) : ''}`);
   console.log('');
   console.log(`${esc(32, '✓')} agline ${VERSION} installed`);
   console.log('');
   row('statusline', SHARE_PATH, alreadyThere ? 'already current' : 'copied');
+  row('command', SHIM_PATH, shimNote);
   row('config', CONFIG_PATH, configCreated ? 'defaults written' : 'already exists, untouched');
   row('settings', SETTINGS_PATH, 'statusLine patched');
   if (backupNote) row('backup', bak, backupNote);
+  if (shimResult !== 'skipped-foreign' && !onPath) {
+    console.log('');
+    console.log(`${esc(33, '!')} ${BIN_DIR} is not on your PATH`);
+    console.log(`  add to PATH: export PATH="$HOME/.local/bin:$PATH"`);
+  }
   console.log('');
   console.log('Next steps:');
   console.log(`  ${dim('·')} Restart agy (or start a new session) to see the statusline`);
@@ -674,6 +743,7 @@ function cmdUninstall() {
       settingsNote = 'statusLine removed, no backup to restore';
     }
   }
+  const shimRemoved = removeShim();
   fs.rmSync(SHARE_DIR, { recursive: true, force: true });
 
   const row = (label, value, note) =>
@@ -683,6 +753,11 @@ function cmdUninstall() {
   console.log('');
   row('settings', SETTINGS_PATH, settingsNote);
   row('statusline', SHARE_DIR, 'removed');
+  row(
+    'command',
+    SHIM_PATH,
+    shimRemoved ? 'shim removed' : 'no agline shim found (foreign files are left alone)'
+  );
   row('config', CONFIG_DIR, 'kept — delete manually if unwanted');
 }
 
@@ -773,6 +848,30 @@ function cmdDoctor() {
     }
   }
 
+  // shim: ~/.local/bin/agline -> installed copy, and on PATH
+  const shimResolved = symlinkTarget(SHIM_PATH);
+  let shimForeign = false;
+  if (shimResolved === null) {
+    try {
+      fs.lstatSync(SHIM_PATH);
+      shimForeign = true;
+    } catch {
+      /* absent */
+    }
+  }
+  if (shimResolved === SHARE_PATH) {
+    ok(`command shim ${SHIM_PATH} -> ${SHARE_PATH}`);
+  } else if (shimForeign) {
+    warn(`${SHIM_PATH} exists but is not an agline shim — leaving it alone; the shim was skipped at install`);
+  } else if (shimResolved !== null) {
+    bad(`command shim ${SHIM_PATH} points at ${shimResolved}, expected ${SHARE_PATH} — run: agline install`);
+  } else {
+    bad(`command shim missing: ${SHIM_PATH} — run: agline install`);
+  }
+  if (!shimForeign && !binDirOnPath()) {
+    warn(`${BIN_DIR} is not on PATH — add to PATH: export PATH="$HOME/.local/bin:$PATH"`);
+  }
+
   // runtime config
   if (!fs.existsSync(CONFIG_PATH)) {
     ok(`config ${CONFIG_PATH} absent — built-in defaults in use`);
@@ -808,12 +907,14 @@ function printUsage() {
 
 Usage:
   agline              render one statusline frame (reads JSON payload from stdin)
-  agline install      copy agline to ~/.local/share/agline and enable it in
+  agline install      copy agline to ~/.local/share/agline, symlink the \`agline\`
+                      command into ~/.local/bin, and enable the statusline in
                       ~/.gemini/antigravity-cli/settings.json
   agline uninstall    restore/remove the statusLine setting and delete
-                      ~/.local/share/agline
+                      ~/.local/share/agline and the ~/.local/bin/agline shim
   agline doctor       check node version, statusLine wiring, installed copy,
-                      config and state dir (exit 1 when something is broken)
+                      command shim, config and state dir (exit 1 when something
+                      is broken)
   agline --version    print version
   agline --help       show this help
 
@@ -841,6 +942,12 @@ export {
   validateConfig,
   buildLine,
   render,
+  installShim,
+  removeShim,
+  binDirOnPath,
+  cmdInstall,
+  cmdUninstall,
+  cmdDoctor,
 };
 
 // Run the CLI only when executed directly (node agline.mjs …), not when

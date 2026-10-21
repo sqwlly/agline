@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-10-21
+
+### Fixed
+
+- `agline doctor` / `agline uninstall` told users to run a command that did not exist: install only placed `agline.mjs` under `~/.local/share/agline/`, so `agline` was never on PATH. `agline install` now symlinks `~/.local/bin/agline` → `~/.local/share/agline/agline.mjs` (shebang + exec bit make it directly runnable; the symlink stays in sync on reinstall). A pre-existing non-symlink file at that path is never clobbered — install warns and skips the shim. When `~/.local/bin` is not on PATH, install prints the `export PATH="$HOME/.local/bin:$PATH"` hint. Re-running install over a correct symlink is a no-op.
+
+### Changed
+
+- `agline uninstall` also removes the `~/.local/bin/agline` shim when it is a symlink pointing into `~/.local/share/agline` (foreign files are left alone).
+- `agline doctor` now checks the shim: it must exist and resolve to the installed copy (a foreign file is a warning, not a failure), and warns when `~/.local/bin` is not on PATH.
+
 ## [0.2.1] - 2026-10-21
 
 ### Changed

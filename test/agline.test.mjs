@@ -3,9 +3,11 @@
 // files (config, burn-rate samples, streak stats) land in the temp dir.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agline-test-'));
 process.env.HOME = tmpHome;
@@ -291,4 +293,91 @@ test('natural-width percent: single space before %, no padding', () => {
   assert.ok(!line9.includes('  9%'), 'no padding for single-digit percent');
   assert.ok(line100.includes(' 100%'));
   assert.equal(line9.indexOf('Context'), line100.indexOf('Context'));
+});
+
+// ---------- install/uninstall shim (CLI end-to-end, temp HOME per case) ----------
+const CLI = fileURLToPath(new URL('../agline.mjs', import.meta.url));
+
+function cliHome() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'agline-cli-'));
+}
+
+function runCli(home, args, extraEnv = {}) {
+  return spawnSync(process.execPath, [CLI, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, HOME: home, NO_COLOR: '1', ...extraEnv },
+  });
+}
+
+const shimPathOf = (home) => path.join(home, '.local', 'bin', 'agline');
+const sharePathOf = (home) => path.join(home, '.local', 'share', 'agline', 'agline.mjs');
+
+test('install symlinks ~/.local/bin/agline -> the installed copy, and the shim runs', () => {
+  const home = cliHome();
+  const r = runCli(home, ['install']);
+  assert.equal(r.status, 0, r.stderr);
+  const shim = shimPathOf(home);
+  assert.ok(fs.lstatSync(shim).isSymbolicLink(), 'shim is a symlink');
+  assert.equal(fs.readlinkSync(shim), sharePathOf(home));
+  assert.ok(r.stdout.includes(shim), 'summary lists the command row');
+  const v = spawnSync(shim, ['--version'], { encoding: 'utf8', env: { ...process.env, HOME: home } });
+  assert.equal(v.status, 0, v.stderr);
+  assert.match(v.stdout.trim(), /^\d+\.\d+\.\d+$/);
+});
+
+test('re-running install over a correct symlink is a no-op success', () => {
+  const home = cliHome();
+  assert.equal(runCli(home, ['install']).status, 0);
+  const shim = shimPathOf(home);
+  const before = fs.lstatSync(shim);
+  const r = runCli(home, ['install']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(fs.readlinkSync(shim), sharePathOf(home));
+  assert.equal(fs.lstatSync(shim).mtimeMs, before.mtimeMs, 'symlink untouched on re-run');
+});
+
+test('install never clobbers a foreign file at the shim path', () => {
+  const home = cliHome();
+  const shim = shimPathOf(home);
+  fs.mkdirSync(path.dirname(shim), { recursive: true });
+  fs.writeFileSync(shim, 'foreign\n');
+  const r = runCli(home, ['install']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(fs.readFileSync(shim, 'utf8'), 'foreign\n', 'foreign file untouched');
+  assert.ok(!fs.lstatSync(shim).isSymbolicLink());
+  assert.ok(r.stdout.includes('skipped'), 'summary notes the skip');
+});
+
+test('uninstall removes the shim, but only when it is agline’s own symlink', () => {
+  const home = cliHome();
+  assert.equal(runCli(home, ['install']).status, 0);
+  const r = runCli(home, ['uninstall']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!fs.existsSync(shimPathOf(home)), 'shim removed');
+  assert.ok(r.stdout.includes('shim removed'));
+
+  const home2 = cliHome();
+  const foreign = shimPathOf(home2);
+  fs.mkdirSync(path.dirname(foreign), { recursive: true });
+  fs.writeFileSync(foreign, 'foreign\n');
+  const r2 = runCli(home2, ['uninstall']);
+  assert.equal(r2.status, 0, r2.stderr);
+  assert.equal(fs.readFileSync(foreign, 'utf8'), 'foreign\n', 'foreign file survives uninstall');
+});
+
+test('doctor reports the shim: healthy after install, missing before, PATH absence is a warning', () => {
+  const home = cliHome();
+  const before = runCli(home, ['doctor']);
+  assert.equal(before.status, 1, 'no install → doctor fails');
+  assert.ok(before.stdout.includes('command shim missing'));
+
+  assert.equal(runCli(home, ['install']).status, 0);
+  const after = runCli(home, ['doctor']);
+  assert.equal(after.status, 0, after.stdout);
+  assert.ok(after.stdout.includes(`command shim ${shimPathOf(home)}`));
+
+  const noPath = runCli(home, ['doctor'], { PATH: '/usr/bin:/bin' });
+  assert.equal(noPath.status, 0, `PATH absence warns but does not fail:\n${noPath.stdout}`);
+  assert.ok(noPath.stdout.includes('! '), 'warning marker printed');
+  assert.ok(noPath.stdout.includes('is not on PATH'));
 });

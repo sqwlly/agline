@@ -37,6 +37,12 @@ npx is only the delivery mechanism: the installer copies `agline.mjs` to a stabl
 `~/.local/share/agline/agline.mjs`, and points the statusLine at that path — so every render
 runs plain `node` on a local file (~40 ms), independent of the npx cache.
 
+It also symlinks the `agline` command into `~/.local/bin` (`~/.local/bin/agline` → the installed
+copy), so after install you can run `agline doctor`, `agline uninstall`, etc. directly — no npx
+needed. If `~/.local/bin` is not on your PATH the installer prints the one-line `export` to add it,
+and if a non-agline file already sits at `~/.local/bin/agline` the shim is skipped with a warning
+instead of clobbering it.
+
 This creates `~/.config/agline/config.json` (from built-in defaults, if missing), copies
 `agline.mjs` to `~/.local/share/agline/`, and patches
 `~/.gemini/antigravity-cli/settings.json` → `statusLine` to:
@@ -55,23 +61,25 @@ to touch a `settings.json` that is not a JSON object, and is idempotent on re-ru
 ## Uninstall
 
 ```sh
-npx @sqwlly/agline uninstall
+agline uninstall        # or: npx @sqwlly/agline uninstall
 ```
 
 If agline's statusLine is active, this restores `settings.json.bak` when present (otherwise
-deletes just the `statusLine` key), then removes `~/.local/share/agline`. If the statusLine
-points at something else, it refuses and prints the current value. Your config in
-`~/.config/agline/` is kept; delete it manually if unwanted.
+deletes just the `statusLine` key), then removes `~/.local/share/agline` and the
+`~/.local/bin/agline` shim (only when it is agline's own symlink; foreign files are left alone).
+If the statusLine points at something else, it refuses and prints the current value. Your config
+in `~/.config/agline/` is kept; delete it manually if unwanted.
 
 ## Doctor
 
 ```sh
-npx @sqwlly/agline doctor
+agline doctor           # or: npx @sqwlly/agline doctor
 ```
 
 Prints a health report — node version, statusLine wiring in `settings.json`, installed-copy
-version vs the binary you're running, config validity, state-dir writability — and exits 1
-when something is broken (0 otherwise). No network calls.
+version vs the binary you're running, the `~/.local/bin/agline` command shim (and whether
+`~/.local/bin` is on PATH), config validity, state-dir writability — and exits 1 when something
+is broken (0 otherwise). No network calls.
 
 ## Config
 
@@ -102,6 +110,7 @@ when something is broken (0 otherwise). No network calls.
 | --- | --- |
 | `agline.mjs` | the entire statusline + CLI (`node agline.mjs [install\|uninstall\|doctor\|--version\|--help]`) |
 | `config.example.json` | documented defaults (reference only; the installer embeds them) |
+| `~/.local/bin/agline` | command shim → `~/.local/share/agline/agline.mjs` (created by install, removed by uninstall) |
 | `~/.config/agline/config.json` | runtime config (not in repo) |
 | `~/.config/agline/burn-state.json` | ETA burn-rate samples (runtime) |
 | `~/.config/agline/stats.json` | usage-day streak (runtime) |
