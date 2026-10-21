@@ -28,10 +28,10 @@ Segments drop progressively (streak → ETA → weekly quota → countdowns → 
 ## Install
 
 ```sh
-npx github:sqwlly/agline install
+npx @sqwlly/agline install
 ```
 
-(Once published to npm this becomes simply `npx agline install`.)
+(Straight from npm — no clone needed. The GitHub form `npx github:sqwlly/agline install` also works.)
 
 npx is only the delivery mechanism: the installer copies `agline.mjs` to a stable location,
 `~/.local/share/agline/agline.mjs`, and points the statusLine at that path — so every render
@@ -55,7 +55,7 @@ to touch a `settings.json` that is not a JSON object, and is idempotent on re-ru
 ## Uninstall
 
 ```sh
-npx github:sqwlly/agline uninstall
+npx @sqwlly/agline uninstall
 ```
 
 If agline's statusLine is active, this restores `settings.json.bak` when present (otherwise
