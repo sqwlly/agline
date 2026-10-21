@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2026-10-21
+
+### Added
+
+- Both quota families on one line: when the payload carries the other family too, it now rides along in compact tagged form — `3p5h`/`3pWk` while on a Gemini model, `G5h`/`GWk` while on a third-party model (no countdowns on the secondary family). New config toggle `showSecondaryQuota` (default `true`). The secondary family is the first quota element to fold as the terminal narrows (drop order: streak → secondary quota → ETA → weekly → countdowns).
+
 ## [0.2.5] - 2026-10-21
 
 ### Added

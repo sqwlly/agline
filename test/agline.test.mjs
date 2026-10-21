@@ -339,12 +339,12 @@ test('natural-width percent: single space before %, no padding', () => {
   assert.equal(line9.indexOf('Context'), line100.indexOf('Context'));
 });
 
-test('render with a non-Gemini model shows the 3p quota buckets', () => {
+test('render with a non-Gemini model leads with the 3p quota buckets', () => {
   seedState();
   const now = Date.now();
   const line = stripAnsi(
     render({
-      ...fixedPayload(150),
+      ...fixedPayload(200),
       model: { id: 'claude-sonnet-4-5', display_name: 'Claude Sonnet 4.5' },
       quota: {
         'gemini-5h': { remaining_fraction: 0.77, reset_time: new Date(now + 9960000).toISOString() },
@@ -354,9 +354,9 @@ test('render with a non-Gemini model shows the 3p quota buckets', () => {
     })
   );
   assert.ok(line.includes('[Claude Sonnet 4.5]'));
-  assert.ok(line.includes('5h ▰▰▰▰▱▱ 61%'), `3p 5h quota, not the gemini one:\n${line}`);
+  assert.ok(line.includes('5h ▰▰▰▰▱▱ 61%'), `3p 5h quota leads, not the gemini one:\n${line}`);
   assert.ok(line.includes('Wk ▱▱▱▱▱▱ 2%'), '3p weekly quota');
-  assert.ok(!line.includes('77%'), 'gemini quota not shown for a 3p model');
+  assert.ok(line.includes('G5h ▰▰▰▰▰▱ 77%'), 'gemini quota rides along as the tagged secondary');
 });
 
 test('render falls back to whichever quota family exists', () => {
@@ -372,6 +372,53 @@ test('render falls back to whichever quota family exists', () => {
     })
   );
   assert.ok(line.includes('5h ▰▰▰▰▰▱ 77%'), `falls back to the gemini family:\n${line}`);
+});
+
+function fixedPayloadBoth(terminalWidth) {
+  const now = Date.now();
+  const p = fixedPayload(terminalWidth);
+  p.quota = {
+    ...p.quota,
+    '3p-5h': { remaining_fraction: 1, reset_time: new Date(now + 18000000).toISOString() },
+    '3p-weekly': { remaining_fraction: 0.018, reset_time: new Date(now + 47077000).toISOString() },
+  };
+  return p;
+}
+
+test('secondary quota family rides along in tagged compact form (no countdowns)', () => {
+  seedState();
+  const line = stripAnsi(render(fixedPayloadBoth(200)));
+  assert.ok(line.includes('3p5h ▰▰▰▰▰▰ 100%'), `tagged 3p 5h block:\n${line}`);
+  assert.ok(line.includes('3pWk ▱▱▱▱▱▱ 2%'), 'tagged 3p weekly block');
+  assert.ok(line.includes('100% · 3pWk'), 'secondary blocks carry no countdowns');
+  assert.ok(line.includes('5h ▰▰▰▰▰▱ 77% · 2h46m'), 'primary family keeps its countdown');
+});
+
+test('secondary quota folds before ETA and weekly as the width shrinks', () => {
+  seedState();
+  const at140 = stripAnsi(render(fixedPayloadBoth(140)));
+  assert.ok(!at140.includes('3p5h'), 'secondary family dropped at 140');
+  assert.ok(!at140.includes('★'), 'streak dropped first');
+  assert.ok(at140.includes('ETA 30m'), 'ETA still present');
+  assert.ok(at140.includes('Wk ▰▱▱▱▱▱ 9%'), 'primary weekly still present');
+  const at100 = stripAnsi(render(fixedPayloadBoth(100)));
+  assert.ok(!at100.includes('ETA'), 'ETA folds after the secondary family');
+  assert.ok(at100.includes('5h ▰▰▰▰▰▱ 77%'));
+});
+
+test('showSecondaryQuota: false hides the other family even on a wide terminal', () => {
+  seedState();
+  fs.writeFileSync(
+    path.join(tmpHome, '.config', 'agline', 'config.json'),
+    JSON.stringify({ showSecondaryQuota: false })
+  );
+  try {
+    const line = stripAnsi(render(fixedPayloadBoth(200)));
+    assert.ok(!line.includes('3p5h'), `secondary hidden:\n${line}`);
+    assert.ok(line.includes('5h ▰▰▰▰▰▱ 77%'), 'primary family still shown');
+  } finally {
+    fs.rmSync(path.join(tmpHome, '.config', 'agline', 'config.json'), { force: true });
+  }
 });
 
 // ---------- install/uninstall shim (CLI end-to-end, temp HOME per case) ----------

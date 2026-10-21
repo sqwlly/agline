@@ -20,10 +20,10 @@ Inspired by agy-hud (MIT) by AllenMuu — rewritten from scratch for Antigravity
 - **Workspace + git** branch, dirty `*`, `[⇅]` when local/`origin` hashes differ (pure filesystem reads, no `git` process; the compared remote is always `origin`). Works in linked worktrees via `commondir` resolution.
 - **Context** bar from `context_window.used_percentage` (green → yellow at `contextWarning` → red at `contextCritical`, plus `⚠ /compact` at critical)
 - **ETA** to context exhaustion from a rolling burn-rate (`~/.config/agline/burn-state.json`)
-- **Quota** 5h / weekly buckets with reset countdowns (gemini vs 3p chosen from the model name)
+- **Quota** 5h / weekly buckets with reset countdowns. The current model's family leads (`5h`/`Wk`); when the payload carries the other family too, it rides along in compact tagged form (`3p5h`/`3pWk` or `G5h`/`GWk`, no countdowns — disable via `showSecondaryQuota`)
 - **Streak** of *consecutive* usage days in your local timezone (`~/.config/agline/stats.json`) + milestone trophies at 7/30/100/365 days
 
-Segments drop progressively (streak → ETA → weekly quota → countdowns → `…` truncation) to fit the terminal width. Percentages render at natural width with a single space (`9%`, `45%`, `100%`), and countdowns are compact (`2h46m`, `3d4h`). ANSI-aware: never cuts inside an escape sequence. Respects `NO_COLOR`.
+Segments drop progressively (streak → secondary quota family → ETA → weekly quota → countdowns → `…` truncation) to fit the terminal width. Percentages render at natural width with a single space (`9%`, `45%`, `100%`), and countdowns are compact (`2h46m`, `3d4h`). ANSI-aware: never cuts inside an escape sequence. Respects `NO_COLOR`.
 
 ## Install
 
@@ -119,6 +119,7 @@ is broken (0 otherwise). No network calls.
   "showStreak": true,
   "showEta": true,
   "showQuota": true,
+  "showSecondaryQuota": true,
   "showGit": true
 }
 ```
@@ -127,6 +128,7 @@ is broken (0 otherwise). No network calls.
 - `maxWidth` — hard cap for the rendered line; `null` uses `terminal_width` from the payload (fallback 80), minus 2, floor 40
 - `contextWarning` / `contextCritical` — percent thresholds for yellow / red (and `⚠ /compact`)
 - `showStreak` / `showEta` / `showQuota` / `showGit` — segment toggles
+- `showSecondaryQuota` — also show the *other* quota family in compact tagged form (`3p5h`/`3pWk` while on Gemini, `G5h`/`GWk` while on a third-party model)
 
 ## Files
 

@@ -7,5 +7,6 @@
   "showStreak": true,
   "showEta": true,
   "showQuota": true,
+  "showSecondaryQuota": true,
   "showGit": true
 }

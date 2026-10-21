@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.2.5';
+const VERSION = '0.2.6';
 
 const HOME = os.homedir();
 const CONFIG_DIR = path.join(HOME, '.config', 'agline');
@@ -30,6 +30,7 @@ const DEFAULTS = {
   showStreak: true,
   showEta: true,
   showQuota: true,
+  showSecondaryQuota: true,
   showGit: true,
 };
 
@@ -139,7 +140,7 @@ function loadConfig() {
     const v = Number(cfg.maxWidth);
     if (Number.isFinite(v) && v > 0) out.maxWidth = v;
   }
-  for (const k of ['showStreak', 'showEta', 'showQuota', 'showGit']) {
+  for (const k of ['showStreak', 'showEta', 'showQuota', 'showSecondaryQuota', 'showGit']) {
     if (typeof cfg[k] === 'boolean') out[k] = cfg[k];
   }
   return out;
@@ -445,6 +446,21 @@ function buildLine(p, cfg, opts, fx) {
         const bW = quotaBlock(g.weekly, 'Wk', cfg, opts);
         if (bW) blocks.push(bW);
       }
+      // Other families (e.g. the 3p quota while on a Gemini model) ride along
+      // in compact form: tagged labels, no countdowns, first thing to fold.
+      if (cfg.showSecondaryQuota && !opts.dropSecondary) {
+        for (const [other, og] of fams) {
+          if (other === fam) continue;
+          const tag = other === 'gemini' ? 'G' : other;
+          const sopts = { ...opts, dropCountdowns: true };
+          const s5 = quotaBlock(og.fiveHour, `${tag}5h`, cfg, sopts);
+          if (s5) blocks.push(s5);
+          if (!opts.dropWeekly) {
+            const sW = quotaBlock(og.weekly, `${tag}Wk`, cfg, sopts);
+            if (sW) blocks.push(sW);
+          }
+        }
+      }
       if (blocks.length) segs.push(blocks.join(` ${dim('·')} `));
     }
   }
@@ -508,9 +524,10 @@ function render(p) {
   const attempts = [
     {},
     { dropStreak: true },
-    { dropStreak: true, dropEta: true },
-    { dropStreak: true, dropEta: true, dropWeekly: true },
-    { dropStreak: true, dropEta: true, dropWeekly: true, dropCountdowns: true },
+    { dropStreak: true, dropSecondary: true },
+    { dropStreak: true, dropSecondary: true, dropEta: true },
+    { dropStreak: true, dropSecondary: true, dropEta: true, dropWeekly: true },
+    { dropStreak: true, dropSecondary: true, dropEta: true, dropWeekly: true, dropCountdowns: true },
   ];
   let line = '';
   for (const opts of attempts) {
@@ -939,7 +956,7 @@ function validateConfig(cfg) {
     const v = Number(cfg.maxWidth);
     if (!(Number.isFinite(v) && v > 0)) invalid.push('maxWidth (want positive number or null)');
   }
-  for (const k of ['showStreak', 'showEta', 'showQuota', 'showGit']) {
+  for (const k of ['showStreak', 'showEta', 'showQuota', 'showSecondaryQuota', 'showGit']) {
     if (cfg[k] !== undefined && typeof cfg[k] !== 'boolean') invalid.push(`${k} (want boolean)`);
   }
   const known = new Set([...Object.keys(DEFAULTS)]);
