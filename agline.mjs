@@ -7,6 +7,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const VERSION = '0.1.0';
 
 const HOME = os.homedir();
 const CONFIG_DIR = path.join(HOME, '.config', 'agline');
@@ -534,11 +537,172 @@ async function main() {
   process.exitCode = 0;
 }
 
-main().catch(() => {
-  try {
-    process.stdout.write('[Gemini] │ ?\n');
-  } catch {
-    /* ignore */
+// ---------- install / uninstall ----------
+// npx is only the delivery mechanism: `install` copies this file to a stable
+// location and points settings.json at it, so every statusline render runs
+// plain `node` on a local file instead of paying npm spawn overhead.
+const SHARE_DIR = path.join(HOME, '.local', 'share', 'agline');
+const SHARE_PATH = path.join(SHARE_DIR, 'agline.mjs');
+const SETTINGS_PATH = path.join(HOME, '.gemini', 'antigravity-cli', 'settings.json');
+
+function fail(msg) {
+  console.error(`agline: ${msg}`);
+  process.exit(1);
+}
+
+function selfPath() {
+  return fs.realpathSync(fileURLToPath(import.meta.url));
+}
+
+function readSettings(strict) {
+  if (!fs.existsSync(SETTINGS_PATH)) return { settings: {}, existed: false };
+  const raw = fs.readFileSync(SETTINGS_PATH, 'utf8');
+  const settings = JSON.parse(raw);
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+    const kind = Array.isArray(settings) ? 'array' : settings === null ? 'null' : typeof settings;
+    if (strict) fail(`${SETTINGS_PATH} is not a JSON object (got ${kind}); refusing to overwrite`);
+    return { settings: null, existed: true };
   }
-  process.exitCode = 0;
-});
+  return { settings, existed: true };
+}
+
+function cmdInstall() {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  if (!fs.existsSync(CONFIG_PATH)) {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULTS, null, 2) + '\n');
+    console.log(`created ${CONFIG_PATH} (built-in defaults)`);
+  } else {
+    console.log(`config already exists: ${CONFIG_PATH} (untouched)`);
+  }
+
+  fs.mkdirSync(SHARE_DIR, { recursive: true });
+  const src = selfPath();
+  const alreadyThere = fs.existsSync(SHARE_PATH) && fs.realpathSync(SHARE_PATH) === src;
+  if (alreadyThere) {
+    console.log(`already installed: ${SHARE_PATH} (self-copy skipped)`);
+  } else {
+    fs.copyFileSync(src, SHARE_PATH);
+    try {
+      fs.chmodSync(SHARE_PATH, 0o755);
+    } catch {
+      /* best effort */
+    }
+    console.log(`copied ${src} -> ${SHARE_PATH}`);
+  }
+
+  const { settings, existed } = readSettings(true);
+  if (!existed) fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
+
+  if (existed) {
+    const bak = `${SETTINGS_PATH}.bak`;
+    if (!fs.existsSync(bak)) {
+      fs.copyFileSync(SETTINGS_PATH, bak);
+      console.log(`backup written: ${bak}`);
+    } else {
+      console.log(`backup already exists: ${bak} (oldest kept)`);
+    }
+  }
+
+  const prev = settings.statusLine;
+  settings.statusLine = { type: 'command', command: `node ${SHARE_PATH}`, enabled: true };
+  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
+  if (!existed) {
+    try {
+      fs.chmodSync(SETTINGS_PATH, 0o600);
+    } catch {
+      /* best effort */
+    }
+  }
+
+  console.log(`patched ${SETTINGS_PATH}`);
+  console.log(`  statusLine = ${JSON.stringify(settings.statusLine)}`);
+  console.log('');
+  console.log('Rollback: restore the previous statusLine value:');
+  console.log(`  previous statusLine = ${JSON.stringify(prev ?? null)}`);
+  if (prev && typeof prev.command === 'string') {
+    console.log('');
+    console.log('  e.g. edit settings.json and set:');
+    console.log(
+      `  "statusLine": ${JSON.stringify({ type: prev.type ?? 'command', command: prev.command }, null, 2)}`
+    );
+  }
+  console.log('');
+  console.log(`Or simply run: agline uninstall`);
+}
+
+function cmdUninstall() {
+  const { settings, existed } = readSettings(false);
+  if (settings === null) {
+    fail(`${SETTINGS_PATH} is not a JSON object; refusing to touch it`);
+  }
+  if (existed && settings.statusLine != null) {
+    const cmd = settings.statusLine?.command;
+    if (typeof cmd !== 'string' || !cmd.includes('agline')) {
+      console.error(`agline: statusLine points elsewhere; refusing to modify settings.`);
+      console.error(`  current statusLine = ${JSON.stringify(settings.statusLine)}`);
+      process.exit(1);
+    }
+    const bak = `${SETTINGS_PATH}.bak`;
+    if (fs.existsSync(bak)) {
+      fs.copyFileSync(bak, SETTINGS_PATH);
+      console.log(`restored ${SETTINGS_PATH} from ${bak}`);
+    } else {
+      delete settings.statusLine;
+      fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
+      console.log(`removed statusLine key from ${SETTINGS_PATH} (no backup to restore)`);
+    }
+  } else {
+    console.log(`no agline statusLine found in ${SETTINGS_PATH} (nothing to patch)`);
+  }
+  fs.rmSync(SHARE_DIR, { recursive: true, force: true });
+  console.log(`removed ${SHARE_DIR}`);
+  console.log(`config kept: ${CONFIG_DIR} (delete manually if unwanted)`);
+}
+
+function printUsage() {
+  console.log(`agline ${VERSION} — single-line statusline HUD for Antigravity CLI
+
+Usage:
+  agline              render one statusline frame (reads JSON payload from stdin)
+  agline install      copy agline to ~/.local/share/agline and enable it in
+                      ~/.gemini/antigravity-cli/settings.json
+  agline uninstall    restore/remove the statusLine setting and delete
+                      ~/.local/share/agline
+  agline --version    print version
+  agline --help       show this help
+
+Install via npx:  npx github:sqwlly/agline install
+(after npm publish: npx agline install)`);
+}
+
+const cmd = process.argv[2];
+if (cmd === undefined) {
+  main().catch(() => {
+    try {
+      process.stdout.write('[Gemini] │ ?\n');
+    } catch {
+      /* ignore */
+    }
+    process.exitCode = 0;
+  });
+} else if (cmd === 'install') {
+  try {
+    cmdInstall();
+  } catch (err) {
+    fail(err?.message || String(err));
+  }
+} else if (cmd === 'uninstall') {
+  try {
+    cmdUninstall();
+  } catch (err) {
+    fail(err?.message || String(err));
+  }
+} else if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
+  console.log(VERSION);
+} else if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
+  printUsage();
+} else {
+  console.error(`agline: unknown command '${cmd}'`);
+  printUsage();
+  process.exit(2);
+}

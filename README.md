@@ -28,23 +28,40 @@ Segments drop progressively (streak → ETA → weekly quota → countdowns → 
 ## Install
 
 ```sh
-node /path/to/agline/install.mjs
+npx github:sqwlly/agline install
 ```
 
-The installer resolves its own real location (`fs.realpathSync` of the script path, so symlinks are
-dereferenced) and installs that absolute path — there is no hardcoded install location.
+(Once published to npm this becomes simply `npx agline install`.)
 
-This creates `~/.config/agline/config.json` (from `config.example.json`, if missing) and patches
+npx is only the delivery mechanism: the installer copies `agline.mjs` to a stable location,
+`~/.local/share/agline/agline.mjs`, and points the statusLine at that path — so every render
+runs plain `node` on a local file (~40 ms), independent of the npx cache.
+
+This creates `~/.config/agline/config.json` (from built-in defaults, if missing), copies
+`agline.mjs` to `~/.local/share/agline/`, and patches
 `~/.gemini/antigravity-cli/settings.json` → `statusLine` to:
 
 ```json
-{ "type": "command", "command": "node <real path>/agline.mjs", "enabled": true }
+{ "type": "command", "command": "node ~/.local/share/agline/agline.mjs", "enabled": true }
 ```
+
+(with the actual home path expanded).
 
 All other settings are preserved (JSON round-trip, indent 2). Before overwriting, the current
 `settings.json` is copied to `settings.json.bak` (an existing `.bak` is kept — the oldest backup
-wins). The installer also prints the previous `statusLine` value as a rollback command, and refuses
-to touch a `settings.json` that is not a JSON object.
+wins). The installer also prints the previous `statusLine` value as a rollback command, refuses
+to touch a `settings.json` that is not a JSON object, and is idempotent on re-run.
+
+## Uninstall
+
+```sh
+npx github:sqwlly/agline uninstall
+```
+
+If agline's statusLine is active, this restores `settings.json.bak` when present (otherwise
+deletes just the `statusLine` key), then removes `~/.local/share/agline`. If the statusLine
+points at something else, it refuses and prints the current value. Your config in
+`~/.config/agline/` is kept; delete it manually if unwanted.
 
 ## Config
 
@@ -73,9 +90,8 @@ to touch a `settings.json` that is not a JSON object.
 
 | Path | Purpose |
 | --- | --- |
-| `agline.mjs` | the entire statusline (run: `node agline.mjs`) |
-| `install.mjs` | config bootstrap + settings.json patcher (prints rollback) |
-| `config.example.json` | documented defaults |
+| `agline.mjs` | the entire statusline + CLI (`node agline.mjs [install\|uninstall\|--version\|--help]`) |
+| `config.example.json` | documented defaults (reference only; the installer embeds them) |
 | `~/.config/agline/config.json` | runtime config (not in repo) |
 | `~/.config/agline/burn-state.json` | ETA burn-rate samples (runtime) |
 | `~/.config/agline/stats.json` | usage-day streak (runtime) |
