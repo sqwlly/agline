@@ -12,7 +12,7 @@ Inspired by agy-hud (MIT) by AllenMuu — rewritten from scratch for Antigravity
 ## What it shows
 
 ```
-[Gemini 4 Argon (High)] │ veyra git:(main*) │ Context ▰▰▰░░░░░░░ 30% │ ETA 2h 10m │ 5h ▰▰▰▰▰▱ 77% · 2h 15m · Wk ▰▱▱▱▱▱ 10% · 3d 4h │ ★ 12d
+[Gemini 4 Argon] │ veyra git:(main*) │ Context ▰▰▰░░░░░░░  30% │ ETA 2h10m │ 5h ▰▰▰▰▰▱  77% · 2h15m · Wk ▰▱▱▱▱▱  10% · 3d4h │ ★ 12d
 ```
 
 - **Spinner** (`◐ ◓ ◑ ◒`) while the agent is active
@@ -23,7 +23,7 @@ Inspired by agy-hud (MIT) by AllenMuu — rewritten from scratch for Antigravity
 - **Quota** 5h / weekly buckets with reset countdowns (gemini vs 3p chosen from the model name)
 - **Streak** of *consecutive* usage days in your local timezone (`~/.config/agline/stats.json`) + milestone trophies at 7/30/100/365 days
 
-Segments drop progressively (streak → ETA → weekly quota → countdowns → `…` truncation) to fit the terminal width. ANSI-aware: never cuts inside an escape sequence. Respects `NO_COLOR`.
+Segments drop progressively (streak → ETA → weekly quota → countdowns → `…` truncation) to fit the terminal width. Percentages are fixed-width (`  9%`, ` 45%`, `100%`) so columns never jitter between renders, and countdowns are compact (`2h46m`, `3d4h`). ANSI-aware: never cuts inside an escape sequence. Respects `NO_COLOR`.
 
 ## Install
 
@@ -63,6 +63,16 @@ deletes just the `statusLine` key), then removes `~/.local/share/agline`. If the
 points at something else, it refuses and prints the current value. Your config in
 `~/.config/agline/` is kept; delete it manually if unwanted.
 
+## Doctor
+
+```sh
+npx @sqwlly/agline doctor
+```
+
+Prints a health report — node version, statusLine wiring in `settings.json`, installed-copy
+version vs the binary you're running, config validity, state-dir writability — and exits 1
+when something is broken (0 otherwise). No network calls.
+
 ## Config
 
 `~/.config/agline/config.json` (all keys optional, defaults shown):
@@ -90,8 +100,22 @@ points at something else, it refuses and prints the current value. Your config i
 
 | Path | Purpose |
 | --- | --- |
-| `agline.mjs` | the entire statusline + CLI (`node agline.mjs [install\|uninstall\|--version\|--help]`) |
+| `agline.mjs` | the entire statusline + CLI (`node agline.mjs [install\|uninstall\|doctor\|--version\|--help]`) |
 | `config.example.json` | documented defaults (reference only; the installer embeds them) |
 | `~/.config/agline/config.json` | runtime config (not in repo) |
 | `~/.config/agline/burn-state.json` | ETA burn-rate samples (runtime) |
 | `~/.config/agline/stats.json` | usage-day streak (runtime) |
+
+## Development
+
+Zero dependencies — no `npm install` needed, ever.
+
+```sh
+npm test   # node --test (node:test + node:assert only)
+```
+
+CI runs `node --check agline.mjs` and `npm test` on node 18/20/22 (`.github/workflows/ci.yml`).
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).

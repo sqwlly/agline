@@ -1,6 +1,6 @@
 {
   "name": "@sqwlly/agline",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Single-line, zero-dependency statusline HUD for Google Antigravity CLI (1.4.3+ protocol)",
   "type": "module",
   "bin": {
@@ -9,6 +9,7 @@
   "files": [
     "agline.mjs",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "config.example.json",
     "docs/demo.svg"
@@ -28,6 +29,9 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
   },
   "homepage": "https://github.com/sqwlly/agline#readme",
   "bugs": {

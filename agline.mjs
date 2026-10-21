@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.1.1';
+const VERSION = '0.2.0';
 
 const HOME = os.homedir();
 const CONFIG_DIR = path.join(HOME, '.config', 'agline');
@@ -44,6 +44,15 @@ const gray = (t) => esc(90, t);
 // or inject terminal escape sequences.
 function sanitize(s) {
   return String(s).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '');
+}
+
+// Drop a trailing effort qualifier ("Gemini 4 Argon (High)" -> "Gemini 4
+// Argon"): it says nothing about the model and only widens the badge. Only
+// known effort words are stripped; any other parenthetical is kept.
+function stripEffort(name) {
+  const s = String(name);
+  const stripped = s.replace(/\s*\((?:high|medium|low|max|min)\)\s*$/i, '');
+  return stripped.trim() ? stripped : s;
 }
 
 // Display width in terminal cells: ANSI sequences are zero-width, code points
@@ -151,7 +160,7 @@ function fmtEta(mins) {
   if (mins < 60) return `${Math.round(mins)}m`;
   const h = Math.floor(mins / 60);
   const m = Math.round(mins % 60);
-  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+  return m === 0 ? `${h}h` : `${h}h${m}m`;
 }
 
 function fmtCountdown(ms) {
@@ -160,10 +169,10 @@ function fmtCountdown(ms) {
   if (mins < 60) return `${Math.max(1, mins)}m`;
   const h = Math.floor(mins / 60);
   const m = mins % 60;
-  if (h < 24) return m ? `${h}h ${m}m` : `${h}h`;
+  if (h < 24) return m ? `${h}h${m}m` : `${h}h`;
   const d = Math.floor(h / 24);
   const hh = h % 24;
-  return hh ? `${d}d ${hh}h` : `${d}d`;
+  return hh ? `${d}d${hh}h` : `${d}d`;
 }
 
 // ---------- git (no process spawning) ----------
@@ -256,12 +265,12 @@ const ETA_PUSH_MS = 10000; // at most one sample every 10s
 const ETA_WINDOW_MS = 10 * 60 * 1000; // keep samples from the last 10 minutes
 const ETA_MIN_SPAN_MS = 60000; // need ≥60s of history before estimating
 
-function computeEta(used, limit) {
-  if (!(limit > 0) || !(used >= 0)) return null;
-  const now = Date.now();
-  const state = readJson(BURN_PATH, {});
-  let samples = Array.isArray(state.samples)
-    ? state.samples.filter(
+// Pure core: takes the previous samples and returns the ETA plus the updated
+// sample window. No I/O — the wrapper below owns persistence.
+function computeEtaFromSamples(prevSamples, used, limit, now) {
+  if (!(limit > 0) || !(used >= 0)) return { eta: null, samples: prevSamples };
+  let samples = Array.isArray(prevSamples)
+    ? prevSamples.filter(
         (s) => s && typeof s.t === 'number' && Number.isFinite(s.t) && typeof s.used === 'number'
       )
     : [];
@@ -270,25 +279,27 @@ function computeEta(used, limit) {
   if (last && used < 0.7 * last.used) samples = []; // new session / compaction
 
   const cur = samples[samples.length - 1];
-  let pushed = false;
-  if (!cur || now - cur.t >= ETA_PUSH_MS) {
-    samples.push({ t: now, used });
-    pushed = true;
-  }
-  const before = samples.length;
+  if (!cur || now - cur.t >= ETA_PUSH_MS) samples = samples.concat({ t: now, used });
   samples = samples.filter((s) => now - s.t <= ETA_WINDOW_MS);
-  if (pushed || samples.length !== before) writeJson(BURN_PATH, { samples });
 
-  if (samples.length < 2) return null;
+  if (samples.length < 2) return { eta: null, samples };
   const first = samples[0];
   const lastS = samples[samples.length - 1];
   const dtMin = (lastS.t - first.t) / 60000;
   const dUsed = lastS.used - first.used;
-  if (lastS.t - first.t < ETA_MIN_SPAN_MS || dUsed <= 0) return null;
+  if (lastS.t - first.t < ETA_MIN_SPAN_MS || dUsed <= 0) return { eta: null, samples };
   const rate = dUsed / dtMin; // tokens per minute
   const remaining = limit - used;
-  if (remaining <= 0) return null;
-  return fmtEta(remaining / rate);
+  if (remaining <= 0) return { eta: null, samples };
+  return { eta: fmtEta(remaining / rate), samples };
+}
+
+function computeEta(used, limit) {
+  const state = readJson(BURN_PATH, {});
+  const prevSamples = Array.isArray(state.samples) ? state.samples : [];
+  const { eta, samples } = computeEtaFromSamples(prevSamples, used, limit, Date.now());
+  if (JSON.stringify(samples) !== JSON.stringify(prevSamples)) writeJson(BURN_PATH, { samples });
+  return eta;
 }
 
 // ---------- streak ----------
@@ -296,6 +307,21 @@ function localDateKey(d) {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}-${m}-${day}`;
+}
+
+// True consecutive-day streak: walk back from today (or from yesterday when
+// today is not recorded yet) while each day has an entry. Pure — `days` is a
+// list of local YYYY-MM-DD keys.
+function streakFromDays(days, now = new Date()) {
+  const set = new Set(days);
+  const cursor = new Date(now.getTime());
+  if (!set.has(localDateKey(cursor))) cursor.setDate(cursor.getDate() - 1);
+  let streak = 0;
+  while (set.has(localDateKey(cursor))) {
+    streak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
 }
 
 function updateStreak() {
@@ -306,20 +332,17 @@ function updateStreak() {
     days = days.concat(today).slice(-400);
     writeJson(STATS_PATH, { days });
   }
-  // true consecutive-day streak: walk back from today (or from yesterday when
-  // today is not recorded yet) while each day has an entry.
-  const set = new Set(days);
-  const cursor = new Date();
-  if (!set.has(localDateKey(cursor))) cursor.setDate(cursor.getDate() - 1);
-  let streak = 0;
-  while (set.has(localDateKey(cursor))) {
-    streak += 1;
-    cursor.setDate(cursor.getDate() - 1);
-  }
-  return streak;
+  return streakFromDays(days);
 }
 
 // ---------- quota ----------
+// gemini models get the gemini-* buckets, everything else the third-party ones.
+function selectQuotaKeys(modelName) {
+  return /gemini/i.test(modelName)
+    ? ['gemini-5h', 'gemini-weekly']
+    : ['3p-5h', '3p-weekly'];
+}
+
 function quotaBlock(q, label, cfg, opts) {
   if (!q || typeof q !== 'object') return null;
   if (typeof q.remaining_fraction !== 'number' || !Number.isFinite(q.remaining_fraction)) {
@@ -344,7 +367,7 @@ function quotaBlock(q, label, cfg, opts) {
   const pct = Math.round(frac * 100);
   const code = pct > 40 ? 32 : pct > 20 ? 33 : 31;
   const b = bar(pct, cfg.quotaBarWidth);
-  let s = `${dim(label)} ${esc(code, b.filled)}${dim(b.empty)} ${esc(`1;${code}`, `${pct}%`)}`;
+  let s = `${dim(label)} ${esc(code, b.filled)}${dim(b.empty)} ${esc(`1;${code}`, `${String(pct).padStart(3)}%`)}`;
   if (countdown && !opts.dropCountdowns) s += ` ${dim('·')} ${dim(countdown)}`;
   return s;
 }
@@ -374,7 +397,7 @@ function buildLine(p, cfg, opts, fx) {
   const ctxCode = fx.pct >= cfg.contextCritical ? 31 : fx.pct >= cfg.contextWarning ? 33 : 32;
   const cb = bar(fx.pct, cfg.barWidth);
   segs.push(
-    `${dim('Context')} ${esc(ctxCode, cb.filled)}${dim(cb.empty)} ${esc(`1;${ctxCode}`, `${fx.pctLabel}%`)}`
+    `${dim('Context')} ${esc(ctxCode, cb.filled)}${dim(cb.empty)} ${esc(`1;${ctxCode}`, `${String(fx.pctLabel).padStart(3)}%`)}`
   );
 
   if (cfg.showEta && !opts.dropEta && fx.eta) segs.push(dim(`ETA ${fx.eta}`));
@@ -382,8 +405,7 @@ function buildLine(p, cfg, opts, fx) {
   if (fx.pct >= cfg.contextCritical) segs.push(esc(93, '⚠️ /compact'));
 
   if (cfg.showQuota && p.quota && typeof p.quota === 'object') {
-    const gemini = /gemini/i.test(fx.modelName);
-    const keys = gemini ? ['gemini-5h', 'gemini-weekly'] : ['3p-5h', '3p-weekly'];
+    const keys = selectQuotaKeys(fx.modelName);
     const blocks = [];
     const b5 = quotaBlock(p.quota[keys[0]], '5h', cfg, opts);
     if (b5) blocks.push(b5);
@@ -412,7 +434,7 @@ function numOrNull(v) {
 function render(p) {
   const cfg = loadConfig();
 
-  const modelName = sanitize(p.model?.display_name || p.model?.id || 'Gemini');
+  const modelName = stripEffort(sanitize(p.model?.display_name || p.model?.id || 'Gemini'));
   const wsRaw = p.workspace?.current_dir || p.cwd || process.cwd();
   const ws = typeof wsRaw === 'string' && wsRaw ? wsRaw : process.cwd();
   const wsBase = sanitize(path.basename(ws) || ws);
@@ -520,7 +542,7 @@ async function main() {
     let model = 'Gemini';
     let base = '?';
     try {
-      model = sanitize(payload.model?.display_name || payload.model?.id || 'Gemini');
+      model = stripEffort(sanitize(payload.model?.display_name || payload.model?.id || 'Gemini'));
     } catch {
       /* ignore */
     }
@@ -659,6 +681,123 @@ function cmdUninstall() {
   console.log(`config kept: ${CONFIG_DIR} (delete manually if unwanted)`);
 }
 
+function validateConfig(cfg) {
+  // Returns the list of invalid keys; mirrors the rules in loadConfig().
+  const invalid = [];
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+    return ['<root is not a JSON object>'];
+  }
+  const numeric = {
+    barWidth: [1, 100],
+    quotaBarWidth: [1, 100],
+    contextWarning: [0, 100],
+    contextCritical: [0, 100],
+  };
+  for (const [k, [lo, hi]] of Object.entries(numeric)) {
+    const v = cfg[k];
+    if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi)) {
+      invalid.push(`${k} (want number ${lo}..${hi})`);
+    }
+  }
+  if (cfg.maxWidth !== undefined && cfg.maxWidth !== null) {
+    const v = Number(cfg.maxWidth);
+    if (!(Number.isFinite(v) && v > 0)) invalid.push('maxWidth (want positive number or null)');
+  }
+  for (const k of ['showStreak', 'showEta', 'showQuota', 'showGit']) {
+    if (cfg[k] !== undefined && typeof cfg[k] !== 'boolean') invalid.push(`${k} (want boolean)`);
+  }
+  const known = new Set([...Object.keys(DEFAULTS)]);
+  for (const k of Object.keys(cfg)) {
+    if (!known.has(k)) invalid.push(`${k} (unknown key)`);
+  }
+  return invalid;
+}
+
+function cmdDoctor() {
+  let failures = 0;
+  const ok = (msg) => console.log(`✓ ${msg}`);
+  const bad = (msg) => {
+    failures += 1;
+    console.log(`✗ ${msg}`);
+  };
+  const warn = (msg) => console.log(`! ${msg}`);
+
+  const major = Number(process.versions.node.split('.')[0]);
+  if (major >= 18) ok(`node ${process.versions.node} (>= 18)`);
+  else bad(`node ${process.versions.node} is too old — agline needs node >= 18`);
+
+  // statusLine wiring in the Antigravity CLI settings
+  if (!fs.existsSync(SETTINGS_PATH)) {
+    bad(`settings not found: ${SETTINGS_PATH} — run: agline install`);
+  } else {
+    let settings = null;
+    try {
+      settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    } catch {
+      bad(`${SETTINGS_PATH} is not valid JSON`);
+    }
+    if (settings && typeof settings === 'object' && !Array.isArray(settings)) {
+      const sl = settings.statusLine;
+      if (!sl || typeof sl.command !== 'string' || !sl.command.includes('agline')) {
+        bad(`statusLine in ${SETTINGS_PATH} does not point at agline — run: agline install`);
+      } else {
+        const target = sl.command.trim().split(/\s+/).pop();
+        if (!fs.existsSync(target)) {
+          bad(`statusLine target does not exist: ${target}`);
+        } else if (sl.enabled === true) {
+          ok(`statusLine -> ${target} (enabled)`);
+        } else {
+          bad(`statusLine -> ${target} but enabled is not true`);
+        }
+      }
+    }
+  }
+
+  // installed copy vs this binary
+  if (!fs.existsSync(SHARE_PATH)) {
+    bad(`installed copy missing: ${SHARE_PATH} — run: agline install`);
+  } else {
+    const m = fs.readFileSync(SHARE_PATH, 'utf8').match(/const VERSION = '([^']+)'/);
+    const installed = m ? m[1] : null;
+    if (installed === VERSION) {
+      ok(`installed copy ${SHARE_PATH} is v${installed} (up to date)`);
+    } else {
+      warn(
+        `installed copy is v${installed ?? '?'} but this binary is v${VERSION} — upgrade via reinstall: agline install`
+      );
+    }
+  }
+
+  // runtime config
+  if (!fs.existsSync(CONFIG_PATH)) {
+    ok(`config ${CONFIG_PATH} absent — built-in defaults in use`);
+  } else {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      const invalid = validateConfig(cfg);
+      if (invalid.length) bad(`config ${CONFIG_PATH} has invalid entries: ${invalid.join('; ')}`);
+      else ok(`config ${CONFIG_PATH} parses and all keys are valid`);
+    } catch {
+      bad(`config ${CONFIG_PATH} is not valid JSON`);
+    }
+  }
+
+  // state dir writable (burn-state.json / stats.json live here)
+  try {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    const probe = path.join(CONFIG_DIR, '.doctor-write-probe');
+    fs.writeFileSync(probe, 'ok');
+    fs.rmSync(probe, { force: true });
+    ok(`state dir writable: ${CONFIG_DIR}`);
+  } catch {
+    bad(`state dir not writable: ${CONFIG_DIR}`);
+  }
+
+  console.log('');
+  console.log('note: agline expects the Antigravity CLI >= 1.4.x statusline payload protocol.');
+  process.exitCode = failures ? 1 : 0;
+}
+
 function printUsage() {
   console.log(`agline ${VERSION} — single-line statusline HUD for Antigravity CLI
 
@@ -668,6 +807,8 @@ Usage:
                       ~/.gemini/antigravity-cli/settings.json
   agline uninstall    restore/remove the statusLine setting and delete
                       ~/.local/share/agline
+  agline doctor       check node version, statusLine wiring, installed copy,
+                      config and state dir (exit 1 when something is broken)
   agline --version    print version
   agline --help       show this help
 
@@ -675,34 +816,77 @@ Install via npx:  npx @sqwlly/agline install
 (or from GitHub:  npx github:sqwlly/agline install)`);
 }
 
-const cmd = process.argv[2];
-if (cmd === undefined) {
-  main().catch(() => {
+// ---------- exports (test suite imports these) + CLI entry guard ----------
+export {
+  VERSION,
+  DEFAULTS,
+  sanitize,
+  stripEffort,
+  vlen,
+  truncateAnsi,
+  bar,
+  fmtEta,
+  fmtCountdown,
+  computeEtaFromSamples,
+  localDateKey,
+  streakFromDays,
+  selectQuotaKeys,
+  quotaBlock,
+  loadConfig,
+  validateConfig,
+  buildLine,
+  render,
+};
+
+// Run the CLI only when executed directly (node agline.mjs …), not when
+// imported as a module. Both sides go through realpath so symlinked paths
+// (npx bin shims, /root/code -> /data/code) compare equal.
+function isMainModule() {
+  try {
+    const argv1 = process.argv[1];
+    if (!argv1) return false;
+    return fs.realpathSync(path.resolve(argv1)) === selfPath();
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  const cmd = process.argv[2];
+  if (cmd === undefined) {
+    main().catch(() => {
+      try {
+        process.stdout.write('[Gemini] │ ?\n');
+      } catch {
+        /* ignore */
+      }
+      process.exitCode = 0;
+    });
+  } else if (cmd === 'install') {
     try {
-      process.stdout.write('[Gemini] │ ?\n');
-    } catch {
-      /* ignore */
+      cmdInstall();
+    } catch (err) {
+      fail(err?.message || String(err));
     }
-    process.exitCode = 0;
-  });
-} else if (cmd === 'install') {
-  try {
-    cmdInstall();
-  } catch (err) {
-    fail(err?.message || String(err));
+  } else if (cmd === 'uninstall') {
+    try {
+      cmdUninstall();
+    } catch (err) {
+      fail(err?.message || String(err));
+    }
+  } else if (cmd === 'doctor') {
+    try {
+      cmdDoctor();
+    } catch (err) {
+      fail(err?.message || String(err));
+    }
+  } else if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
+    console.log(VERSION);
+  } else if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
+    printUsage();
+  } else {
+    console.error(`agline: unknown command '${cmd}'`);
+    printUsage();
+    process.exit(2);
   }
-} else if (cmd === 'uninstall') {
-  try {
-    cmdUninstall();
-  } catch (err) {
-    fail(err?.message || String(err));
-  }
-} else if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
-  console.log(VERSION);
-} else if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
-  printUsage();
-} else {
-  console.error(`agline: unknown command '${cmd}'`);
-  printUsage();
-  process.exit(2);
 }
