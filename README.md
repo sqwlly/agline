@@ -1,7 +1,7 @@
 # agline
 
 A zero-dependency, single-line statusline HUD for **Google Antigravity CLI** (`agy`).
-One Node.js ESM file — no `npm install`, no build step. Node 22+.
+One Node.js ESM file — no `npm install`, no build step. Node 18+ is enough.
 
 Inspired by agy-hud (MIT) by AllenMuu — rewritten from scratch for Antigravity CLI 1.4.3's statusline protocol.
 
@@ -13,29 +13,34 @@ Inspired by agy-hud (MIT) by AllenMuu — rewritten from scratch for Antigravity
 
 - **Spinner** (`◐ ◓ ◑ ◒`) while the agent is active
 - **Model badge** (bold bright cyan)
-- **Workspace + git** branch, dirty `*`, `[⇅]` when local/origin hashes differ (pure filesystem reads, no `git` process)
+- **Workspace + git** branch, dirty `*`, `[⇅]` when local/`origin` hashes differ (pure filesystem reads, no `git` process; the compared remote is always `origin`). Works in linked worktrees via `commondir` resolution.
 - **Context** bar from `context_window.used_percentage` (green → yellow at `contextWarning` → red at `contextCritical`, plus `⚠ /compact` at critical)
 - **ETA** to context exhaustion from a rolling burn-rate (`~/.config/agline/burn-state.json`)
 - **Quota** 5h / weekly buckets with reset countdowns (gemini vs 3p chosen from the model name)
-- **Streak** of consecutive usage days (`~/.config/agline/stats.json`) + milestone trophies at 7/30/100/365 days
+- **Streak** of *consecutive* usage days in your local timezone (`~/.config/agline/stats.json`) + milestone trophies at 7/30/100/365 days
 
 Segments drop progressively (streak → ETA → weekly quota → countdowns → `…` truncation) to fit the terminal width. ANSI-aware: never cuts inside an escape sequence. Respects `NO_COLOR`.
 
 ## Install
 
 ```sh
-node /root/code/agline/install.mjs
+node /path/to/agline/install.mjs
 ```
+
+The installer resolves its own real location (`fs.realpathSync` of the script path, so symlinks are
+dereferenced) and installs that absolute path — there is no hardcoded install location.
 
 This creates `~/.config/agline/config.json` (from `config.example.json`, if missing) and patches
 `~/.gemini/antigravity-cli/settings.json` → `statusLine` to:
 
 ```json
-{ "type": "command", "command": "node /root/code/agline/agline.mjs", "enabled": true }
+{ "type": "command", "command": "node <real path>/agline.mjs", "enabled": true }
 ```
 
-All other settings are preserved (JSON round-trip, indent 2). The installer prints the previous
-`statusLine` value as a rollback command.
+All other settings are preserved (JSON round-trip, indent 2). Before overwriting, the current
+`settings.json` is copied to `settings.json.bak` (an existing `.bak` is kept — the oldest backup
+wins). The installer also prints the previous `statusLine` value as a rollback command, and refuses
+to touch a `settings.json` that is not a JSON object.
 
 ## Config
 
