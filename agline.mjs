@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 
 const HOME = os.homedir();
 const CONFIG_DIR = path.join(HOME, '.config', 'agline');
@@ -671,8 +671,8 @@ Usage:
   agline --version    print version
   agline --help       show this help
 
-Install via npx:  npx github:sqwlly/agline install
-(after npm publish: npx agline install)`);
+Install via npx:  npx @sqwlly/agline install
+(or from GitHub:  npx github:sqwlly/agline install)`);
 }
 
 const cmd = process.argv[2];
