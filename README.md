@@ -5,6 +5,10 @@ One Node.js ESM file — no `npm install`, no build step. Node 18+ is enough.
 
 Inspired by agy-hud (MIT) by AllenMuu — rewritten from scratch for Antigravity CLI 1.4.3's statusline protocol.
 
+![agline in action](docs/demo.svg)
+
+<sub>Synthesized asciinema replay (`docs/demo.cast` → `docs/demo.svg` via svg-term-cli) of real `agline.mjs` output frames — not a screen recording.</sub>
+
 ## What it shows
 
 ```
