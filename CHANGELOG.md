@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-10-21
+
+### Added
+
+- `agline --record <file>`: renders the statusline as usual and also appends the raw stdin payload to `<file>` — capture exactly what your Antigravity version sends (point statusLine at `node …/agline.mjs --record ~/agline-payload.jsonl`, run one prompt, inspect the file, then `agline install` to revert). Mentioned in `--help` and as a `doctor` tip.
+
+### Fixed
+
+- Quota for non-Gemini models could silently disappear: the quota buckets are now discovered generically from whatever `<family>-5h` / `<family>-weekly` keys the payload actually carries (so future families like `claude-5h` work without a code change), and when the model's own family is absent or carries no usable bucket, agline falls back to any family that does instead of rendering nothing. `selectQuotaKeys` was replaced by exported `quotaFamilies` / `selectQuotaFamily`.
+
 ## [0.2.4] - 2026-10-21
 
 ### Fixed

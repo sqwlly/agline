@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.2.4';
+const VERSION = '0.2.5';
 
 const HOME = os.homedir();
 const CONFIG_DIR = path.join(HOME, '.config', 'agline');
@@ -336,11 +336,40 @@ function updateStreak() {
 }
 
 // ---------- quota ----------
-// gemini models get the gemini-* buckets, everything else the third-party ones.
-function selectQuotaKeys(modelName) {
-  return /gemini/i.test(modelName)
-    ? ['gemini-5h', 'gemini-weekly']
-    : ['3p-5h', '3p-weekly'];
+// The payload carries per-family buckets named "<family>-5h" / "<family>-weekly"
+// ("gemini-*" for Gemini models, "3p-*" for third-party ones). Parse whatever
+// families are actually present so future keys (e.g. "claude-5h") just work.
+function quotaFamilies(quota) {
+  const fams = new Map();
+  if (!quota || typeof quota !== 'object') return fams;
+  for (const key of Object.keys(quota)) {
+    const m = /^(.+)-(5h|weekly)$/.exec(key);
+    if (!m) continue;
+    let g = fams.get(m[1]);
+    if (!g) fams.set(m[1], (g = {}));
+    g[m[2] === '5h' ? 'fiveHour' : 'weekly'] = quota[key];
+  }
+  return fams;
+}
+
+// gemini models get the gemini family, everything else the third-party one;
+// when the preferred family is absent or carries no usable bucket, fall back
+// to any family that does (a family named after the model wins the tie).
+function selectQuotaFamily(modelName, fams) {
+  if (!fams.size) return null;
+  const usable = (g) =>
+    (g && Number.isFinite(g.fiveHour?.remaining_fraction)) ||
+    (g && Number.isFinite(g.weekly?.remaining_fraction));
+  const prefer = /gemini/i.test(modelName) ? 'gemini' : '3p';
+  if (fams.has(prefer) && usable(fams.get(prefer))) return prefer;
+  const lower = String(modelName).toLowerCase();
+  for (const [fam, g] of fams) {
+    if (fam !== prefer && fam !== 'gemini' && lower.includes(fam) && usable(g)) return fam;
+  }
+  for (const [fam, g] of fams) {
+    if (fam !== prefer && usable(g)) return fam;
+  }
+  return fams.has(prefer) ? prefer : fams.keys().next().value;
 }
 
 function quotaBlock(q, label, cfg, opts) {
@@ -404,16 +433,20 @@ function buildLine(p, cfg, opts, fx) {
 
   if (fx.pct >= cfg.contextCritical) segs.push(esc(93, '⚠️ /compact'));
 
-  if (cfg.showQuota && p.quota && typeof p.quota === 'object') {
-    const keys = selectQuotaKeys(fx.modelName);
-    const blocks = [];
-    const b5 = quotaBlock(p.quota[keys[0]], '5h', cfg, opts);
-    if (b5) blocks.push(b5);
-    if (!opts.dropWeekly) {
-      const bW = quotaBlock(p.quota[keys[1]], 'Wk', cfg, opts);
-      if (bW) blocks.push(bW);
+  if (cfg.showQuota) {
+    const fams = quotaFamilies(p.quota);
+    const fam = selectQuotaFamily(fx.modelName, fams);
+    if (fam) {
+      const g = fams.get(fam);
+      const blocks = [];
+      const b5 = quotaBlock(g.fiveHour, '5h', cfg, opts);
+      if (b5) blocks.push(b5);
+      if (!opts.dropWeekly) {
+        const bW = quotaBlock(g.weekly, 'Wk', cfg, opts);
+        if (bW) blocks.push(bW);
+      }
+      if (blocks.length) segs.push(blocks.join(` ${dim('·')} `));
     }
-    if (blocks.length) segs.push(blocks.join(` ${dim('·')} `));
   }
 
   if (cfg.showStreak && !opts.dropStreak && fx.streakDays > 1) {
@@ -522,8 +555,16 @@ function readStdin() {
   });
 }
 
-async function main() {
+async function main(recordPath) {
   const raw = await readStdin();
+  if (recordPath) {
+    // Diagnostics must never break rendering — best-effort append only.
+    try {
+      fs.appendFileSync(recordPath, `${raw.replace(/\s*\n\s*/g, ' ')}\n`);
+    } catch {
+      /* ignore */
+    }
+  }
   try {
     process.stdin.destroy();
   } catch {
@@ -1061,6 +1102,7 @@ function cmdDoctor() {
 
   console.log('');
   console.log('note: agline expects the Antigravity CLI >= 1.4.x statusline payload protocol.');
+  console.log('tip: quota/model looks wrong? capture the real payload with `--record` (see: agline --help).');
   process.exitCode = failures ? 1 : 0;
 }
 
@@ -1079,6 +1121,10 @@ Usage:
   agline doctor       check node version, statusLine wiring, installed copy,
                       command shim, config and state dir (exit 1 when something
                       is broken)
+  agline --record F   render normally and also append the raw stdin payload to
+                      the file F (diagnostics: capture what your Antigravity
+                      version actually sends — point statusLine at this form,
+                      run one prompt, inspect F, then \`agline install\` to revert)
   agline --version    print version
   agline --help       show this help
 
@@ -1100,7 +1146,8 @@ export {
   computeEtaFromSamples,
   localDateKey,
   streakFromDays,
-  selectQuotaKeys,
+  selectQuotaFamily,
+  quotaFamilies,
   quotaBlock,
   loadConfig,
   validateConfig,
@@ -1135,15 +1182,23 @@ function isMainModule() {
 
 if (isMainModule()) {
   const cmd = process.argv[2];
+  const renderFallback = () => {
+    try {
+      process.stdout.write('[Gemini] │ ?\n');
+    } catch {
+      /* ignore */
+    }
+    process.exitCode = 0;
+  };
   if (cmd === undefined) {
-    main().catch(() => {
-      try {
-        process.stdout.write('[Gemini] │ ?\n');
-      } catch {
-        /* ignore */
-      }
-      process.exitCode = 0;
-    });
+    main().catch(renderFallback);
+  } else if (cmd === '--record' || cmd.startsWith('--record=')) {
+    const recordPath = cmd.startsWith('--record=') ? cmd.slice('--record='.length) : process.argv[3];
+    if (!recordPath) {
+      console.error('agline: --record needs a file path (--record <path> or --record=<path>)');
+      process.exit(2);
+    }
+    main(recordPath).catch(renderFallback);
   } else if (cmd === 'install') {
     try {
       cmdInstall();

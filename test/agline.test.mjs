@@ -24,7 +24,8 @@ const {
   computeEtaFromSamples,
   localDateKey,
   streakFromDays,
-  selectQuotaKeys,
+  selectQuotaFamily,
+  quotaFamilies,
   quotaBlock,
   render,
   DEFAULTS,
@@ -89,10 +90,48 @@ test('bar fill counts at 0/42/100%', () => {
 });
 
 // ---------- quota ----------
-test('quota key selection follows the model family', () => {
-  assert.deepEqual(selectQuotaKeys('Gemini 4 Argon'), ['gemini-5h', 'gemini-weekly']);
-  assert.deepEqual(selectQuotaKeys('gemini flash'), ['gemini-5h', 'gemini-weekly']);
-  assert.deepEqual(selectQuotaKeys('Claude Sonnet 4.5'), ['3p-5h', '3p-weekly']);
+test('quotaFamilies parses every <family>-5h/-weekly bucket', () => {
+  const fams = quotaFamilies({
+    'gemini-5h': { remaining_fraction: 0.5 },
+    'gemini-weekly': { remaining_fraction: 0.1 },
+    '3p-5h': { remaining_fraction: 1 },
+    '3p-weekly': { remaining_fraction: 0.02 },
+    unrelated: { remaining_fraction: 0.9 },
+  });
+  assert.deepEqual([...fams.keys()].sort(), ['3p', 'gemini']);
+  assert.equal(fams.get('gemini').fiveHour.remaining_fraction, 0.5);
+  assert.equal(fams.get('3p').weekly.remaining_fraction, 0.02);
+  assert.equal(quotaFamilies(null).size, 0);
+  assert.equal(quotaFamilies({}).size, 0);
+});
+
+test('quota family selection follows the model family', () => {
+  const fams = quotaFamilies({
+    'gemini-5h': { remaining_fraction: 0.5 },
+    '3p-5h': { remaining_fraction: 1 },
+    '3p-weekly': { remaining_fraction: 0.02 },
+  });
+  assert.equal(selectQuotaFamily('Gemini 4 Argon', fams), 'gemini');
+  assert.equal(selectQuotaFamily('gemini flash', fams), 'gemini');
+  assert.equal(selectQuotaFamily('Claude Sonnet 4.5', fams), '3p');
+  assert.equal(selectQuotaFamily('GPT-5', fams), '3p');
+});
+
+test('quota family falls back when the preferred family is absent or unusable', () => {
+  const geminiOnly = quotaFamilies({ 'gemini-5h': { remaining_fraction: 0.5 } });
+  assert.equal(selectQuotaFamily('Claude Sonnet 4.5', geminiOnly), 'gemini');
+  const thirdPartyOnly = quotaFamilies({ '3p-weekly': { remaining_fraction: 0.02 } });
+  assert.equal(selectQuotaFamily('Gemini 4 Argon', thirdPartyOnly), '3p');
+  // preferred family present but without a usable bucket -> other family wins
+  const broken = quotaFamilies({
+    '3p-5h': { remaining_fraction: 'x' },
+    'gemini-weekly': { remaining_fraction: 0.1 },
+  });
+  assert.equal(selectQuotaFamily('Claude Sonnet 4.5', broken), 'gemini');
+  // unknown future families keyed by model name still resolve
+  const claudeKeyed = quotaFamilies({ 'claude-5h': { remaining_fraction: 0.3 } });
+  assert.equal(selectQuotaFamily('Claude Sonnet 4.5', claudeKeyed), 'claude');
+  assert.equal(selectQuotaFamily('Claude Sonnet 4.5', quotaFamilies({})), null);
 });
 
 test('quota fraction clamps to [0,1] and percent is natural width', () => {
@@ -300,6 +339,41 @@ test('natural-width percent: single space before %, no padding', () => {
   assert.equal(line9.indexOf('Context'), line100.indexOf('Context'));
 });
 
+test('render with a non-Gemini model shows the 3p quota buckets', () => {
+  seedState();
+  const now = Date.now();
+  const line = stripAnsi(
+    render({
+      ...fixedPayload(150),
+      model: { id: 'claude-sonnet-4-5', display_name: 'Claude Sonnet 4.5' },
+      quota: {
+        'gemini-5h': { remaining_fraction: 0.77, reset_time: new Date(now + 9960000).toISOString() },
+        '3p-5h': { remaining_fraction: 0.61, reset_time: new Date(now + 9960000).toISOString() },
+        '3p-weekly': { remaining_fraction: 0.02, reset_time: new Date(now + 273600000).toISOString() },
+      },
+    })
+  );
+  assert.ok(line.includes('[Claude Sonnet 4.5]'));
+  assert.ok(line.includes('5h ▰▰▰▰▱▱ 61%'), `3p 5h quota, not the gemini one:\n${line}`);
+  assert.ok(line.includes('Wk ▱▱▱▱▱▱ 2%'), '3p weekly quota');
+  assert.ok(!line.includes('77%'), 'gemini quota not shown for a 3p model');
+});
+
+test('render falls back to whichever quota family exists', () => {
+  seedState();
+  const now = Date.now();
+  const line = stripAnsi(
+    render({
+      ...fixedPayload(150),
+      model: { id: 'claude-sonnet-4-5', display_name: 'Claude Sonnet 4.5' },
+      quota: {
+        'gemini-5h': { remaining_fraction: 0.77, reset_time: new Date(now + 9960000).toISOString() },
+      },
+    })
+  );
+  assert.ok(line.includes('5h ▰▰▰▰▰▱ 77%'), `falls back to the gemini family:\n${line}`);
+});
+
 // ---------- install/uninstall shim (CLI end-to-end, temp HOME per case) ----------
 const CLI = fileURLToPath(new URL('../agline.mjs', import.meta.url));
 
@@ -478,4 +552,18 @@ test('statusLineTarget: bare win32 drive-letter path and legacy quoted form', ()
     statusLineTarget('node /home/u/.local/share/agline/agline.mjs'),
     '/home/u/.local/share/agline/agline.mjs'
   );
+});
+
+test('--record appends the raw payload to a file and still renders', () => {
+  const home = cliHome();
+  const log = path.join(home, 'payload.jsonl');
+  const payload = JSON.stringify({ model: { display_name: 'Claude Sonnet 4.5' }, terminal_width: 120 });
+  const r = spawnSync(process.execPath, [CLI, '--record', log], {
+    encoding: 'utf8',
+    input: payload,
+    env: { ...process.env, HOME: home, NO_COLOR: '1' },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes('[Claude Sonnet 4.5]'), 'renders the statusline');
+  assert.equal(fs.readFileSync(log, 'utf8').trim(), payload, 'raw payload captured verbatim');
 });
