@@ -28,6 +28,10 @@ const {
   quotaBlock,
   render,
   DEFAULTS,
+  WIN_CMD_MARKER,
+  winCmdShimContent,
+  chooseWinShimDir,
+  statusLineTarget,
 } = await import('../agline.mjs');
 
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -380,4 +384,69 @@ test('doctor reports the shim: healthy after install, missing before, PATH absen
   assert.equal(noPath.status, 0, `PATH absence warns but does not fail:\n${noPath.stdout}`);
   assert.ok(noPath.stdout.includes('! '), 'warning marker printed');
   assert.ok(noPath.stdout.includes('is not on PATH'));
+});
+
+// ---------- Windows (win32) shim logic — pure functions, testable on Linux ----------
+test('winCmdShimContent: marker, CRLF, %~dp0-relative target on the same drive', () => {
+  const home = 'C:\\Users\\jane';
+  const shimDir = 'C:\\Users\\jane\\.local\\bin';
+  const share = 'C:\\Users\\jane\\.local\\share\\agline\\agline.mjs';
+  const content = winCmdShimContent(share, shimDir);
+  assert.ok(content.includes(WIN_CMD_MARKER), 'ownership marker present');
+  assert.ok(content.includes('\r\n'), 'CRLF line endings');
+  assert.ok(
+    content.includes('node "%~dp0..\\share\\agline\\agline.mjs" %*'),
+    `%~dp0-relative target:\n${content}`
+  );
+  assert.ok(content.startsWith('@echo off'));
+  assert.ok(!content.includes(home), 'no absolute home path when relative works');
+});
+
+test('winCmdShimContent: falls back to an absolute target across drives', () => {
+  const content = winCmdShimContent('D:\\tools\\agline\\agline.mjs', 'C:\\Users\\jane\\bin');
+  assert.ok(content.includes(WIN_CMD_MARKER));
+  assert.ok(
+    content.includes('node "D:\\tools\\agline\\agline.mjs" %*'),
+    `absolute fallback:\n${content}`
+  );
+  assert.ok(!content.includes('%~dp0'), 'no %~dp0 prefix on a cross-drive path');
+});
+
+test('chooseWinShimDir: %APPDATA%\\npm wins when it exists, else ~/.local/bin', () => {
+  const home = 'C:\\Users\\jane';
+  const npmDir = 'C:\\Users\\jane\\AppData\\Roaming\\npm';
+  const all = () => true;
+  const none = () => false;
+
+  // APPDATA set and the npm global prefix exists → use it
+  assert.deepEqual(chooseWinShimDir({ APPDATA: 'C:\\Users\\jane\\AppData\\Roaming' }, home, all), {
+    dir: npmDir,
+    npmPrefix: true,
+  });
+  // APPDATA set but %APPDATA%\npm missing → ~/.local/bin
+  assert.deepEqual(chooseWinShimDir({ APPDATA: 'C:\\Users\\jane\\AppData\\Roaming' }, home, none), {
+    dir: 'C:\\Users\\jane\\.local\\bin',
+    npmPrefix: false,
+  });
+  // APPDATA unset → ~/.local/bin
+  assert.deepEqual(chooseWinShimDir({}, home, all), {
+    dir: 'C:\\Users\\jane\\.local\\bin',
+    npmPrefix: false,
+  });
+});
+
+test('statusLine command with a Windows path: valid JSON, escaped backslashes, round-trips', () => {
+  const share = 'C:\\Users\\jane doe\\.local\\share\\agline\\agline.mjs'; // note the space
+  const settings = {
+    statusLine: { type: 'command', command: `node "${share}"`, enabled: true },
+    otherKey: { nested: true },
+  };
+  const raw = JSON.stringify(settings, null, 2) + '\n';
+  assert.ok(raw.includes('C:\\\\Users\\\\jane doe'), 'backslashes escaped in the JSON text');
+  const back = JSON.parse(raw);
+  assert.equal(back.statusLine.command, `node "${share}"`, 'command round-trips exactly');
+  assert.equal(back.otherKey.nested, true, 'other settings preserved');
+  assert.equal(statusLineTarget(back.statusLine.command), share, 'doctor target extraction handles quotes');
+  // POSIX-style unquoted command still extracts via whitespace split
+  assert.equal(statusLineTarget('node /home/u/.local/share/agline/agline.mjs'), '/home/u/.local/share/agline/agline.mjs');
 });

@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.2.2';
+const VERSION = '0.2.3';
 
 const HOME = os.homedir();
 const CONFIG_DIR = path.join(HOME, '.config', 'agline');
@@ -569,6 +569,46 @@ const BIN_DIR = path.join(HOME, '.local', 'bin');
 const SHIM_PATH = path.join(BIN_DIR, 'agline');
 const SETTINGS_PATH = path.join(HOME, '.gemini', 'antigravity-cli', 'settings.json');
 
+const IS_WIN32 = process.platform === 'win32';
+// Marker line inside the generated agline.cmd so install/doctor/uninstall can
+// tell our shim apart from a foreign file that happens to sit at the path.
+const WIN_CMD_MARKER = ':: agline shim';
+
+// Where the agline.cmd shim goes on Windows: %APPDATA%\npm (the npm global
+// prefix, already on PATH for typical Node installs) when it exists, else
+// ~/.local/bin. Pure/injectable so tests can exercise the decision on Linux.
+function chooseWinShimDir(env, home, exists) {
+  const appdata = env && env.APPDATA;
+  if (appdata && exists(path.win32.join(appdata, 'npm'))) {
+    return { dir: path.win32.join(appdata, 'npm'), npmPrefix: true };
+  }
+  return { dir: path.win32.join(home, '.local', 'bin'), npmPrefix: false };
+}
+
+// Content of the Windows command shim. The target is written relative to the
+// shim's own dir (%~dp0) when it stays on the same drive, else absolute.
+function winCmdShimContent(sharePath, shimDir) {
+  const rel = path.win32.relative(shimDir, sharePath);
+  const target = rel && !path.win32.isAbsolute(rel) ? `%~dp0${rel}` : sharePath;
+  return `@echo off\r\n${WIN_CMD_MARKER}\r\nnode "${target}" %*\r\n`;
+}
+
+// Platform-aware shim location. POSIX: ~/.local/bin/agline (symlink).
+// Windows: <chosen dir>/agline.cmd (CMD wrapper).
+function shimInfo() {
+  if (!IS_WIN32) return { dir: BIN_DIR, path: SHIM_PATH, kind: 'symlink', npmPrefix: false };
+  const { dir, npmPrefix } = chooseWinShimDir(process.env, HOME, (p) => fs.existsSync(p));
+  return { dir, path: path.join(dir, 'agline.cmd'), kind: 'cmd', npmPrefix };
+}
+
+function dirOnPath(dir) {
+  const entries = (process.env.PATH || '').split(path.delimiter);
+  if (!IS_WIN32) return entries.some((p) => p === dir);
+  // Windows PATH lookup is case-insensitive and tolerant of trailing slashes.
+  const norm = (s) => s.replace(/[\\/]+$/, '').toLowerCase();
+  return entries.some((p) => norm(p) === norm(dir));
+}
+
 function fail(msg) {
   console.error(`agline: ${msg}`);
   process.exit(1);
@@ -586,9 +626,31 @@ function symlinkTarget(p) {
 }
 
 function binDirOnPath() {
-  return (process.env.PATH || '')
-    .split(path.delimiter)
-    .some((p) => p === BIN_DIR);
+  return dirOnPath(BIN_DIR);
+}
+
+// Windows shim: write agline.cmd (marker-tagged) into the chosen dir.
+// Returns 'already-ok' | 'created' | 'skipped-foreign' like the POSIX path.
+// A foreign file (no marker) is never clobbered; our own stale shim is
+// rewritten so reinstalls track a moved share dir.
+function installShimWin() {
+  const { path: shimPath, dir } = shimInfo();
+  const want = winCmdShimContent(SHARE_PATH, dir);
+  let cur = null;
+  try {
+    cur = fs.readFileSync(shimPath, 'utf8');
+  } catch {
+    /* absent */
+  }
+  if (cur !== null) {
+    if (!cur.includes(WIN_CMD_MARKER)) return 'skipped-foreign';
+    if (cur === want) return 'already-ok';
+    fs.writeFileSync(shimPath, want);
+    return 'created';
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(shimPath, want);
+  return 'created';
 }
 
 // Symlink ~/.local/bin/agline -> ~/.local/share/agline/agline.mjs so the
@@ -597,6 +659,7 @@ function binDirOnPath() {
 //   'created'         shim created (or a stale symlink re-pointed)
 //   'skipped-foreign' a real file occupies the path — never clobbered
 function installShim() {
+  if (IS_WIN32) return installShimWin();
   const resolved = symlinkTarget(SHIM_PATH);
   if (resolved === SHARE_PATH) return 'already-ok';
   const isSymlink = resolved !== null;
@@ -619,6 +682,7 @@ function installShim() {
 // Remove the shim only when it is a symlink pointing into our share dir;
 // foreign files are left alone. Returns true when something was removed.
 function removeShim() {
+  if (IS_WIN32) return removeShimWin();
   const resolved = symlinkTarget(SHIM_PATH);
   if (resolved === null) return false;
   if (resolved !== SHARE_PATH && !resolved.startsWith(SHARE_DIR + path.sep)) return false;
@@ -626,8 +690,36 @@ function removeShim() {
   return true;
 }
 
+// Windows: delete agline.cmd only when it carries our marker.
+function removeShimWin() {
+  const { path: shimPath } = shimInfo();
+  let cur = null;
+  try {
+    cur = fs.readFileSync(shimPath, 'utf8');
+  } catch {
+    return false;
+  }
+  if (!cur.includes(WIN_CMD_MARKER)) return false;
+  fs.rmSync(shimPath, { force: true });
+  return true;
+}
+
 function selfPath() {
   return fs.realpathSync(fileURLToPath(import.meta.url));
+}
+
+// The statusLine command written into settings.json. Windows paths can
+// contain spaces, so the share path is quoted there (JSON.stringify escapes
+// the backslashes); POSIX keeps the bare `node <path>` form.
+function statusLineCommand() {
+  return IS_WIN32 ? `node "${SHARE_PATH}"` : `node ${SHARE_PATH}`;
+}
+
+// Inverse of the above for doctor: pull the script path out of the command.
+function statusLineTarget(command) {
+  const q = String(command).match(/"([^"]+)"\s*$/);
+  if (q) return q[1];
+  return String(command).trim().split(/\s+/).pop();
 }
 
 function readSettings(strict) {
@@ -676,7 +768,7 @@ function cmdInstall() {
   }
 
   const prev = settings.statusLine;
-  settings.statusLine = { type: 'command', command: `node ${SHARE_PATH}`, enabled: true };
+  settings.statusLine = { type: 'command', command: statusLineCommand(), enabled: true };
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
   if (!existed) {
     try {
@@ -687,13 +779,17 @@ function cmdInstall() {
   }
 
   const shimResult = installShim();
+  const { path: shimPath, dir: shimDir, npmPrefix } = shimInfo();
+  const createdNote = IS_WIN32
+    ? 'shim written — agline doctor, uninstall, ...'
+    : 'symlinked — agline doctor, uninstall, ...';
   const shimNote =
     shimResult === 'already-ok'
       ? 'already current — agline doctor, uninstall, ...'
       : shimResult === 'created'
-        ? 'symlinked — agline doctor, uninstall, ...'
+        ? createdNote
         : 'skipped — a non-agline file already exists there';
-  const onPath = binDirOnPath();
+  const onPath = dirOnPath(shimDir);
 
   const row = (label, value, note) =>
     console.log(`  ${dim(label.padEnd(11))} ${value}${note ? dim(` (${note})`) : ''}`);
@@ -701,14 +797,21 @@ function cmdInstall() {
   console.log(`${esc(32, '✓')} agline ${VERSION} installed`);
   console.log('');
   row('statusline', SHARE_PATH, alreadyThere ? 'already current' : 'copied');
-  row('command', SHIM_PATH, shimNote);
+  row('command', shimPath, shimNote);
   row('config', CONFIG_PATH, configCreated ? 'defaults written' : 'already exists, untouched');
   row('settings', SETTINGS_PATH, 'statusLine patched');
   if (backupNote) row('backup', bak, backupNote);
   if (shimResult !== 'skipped-foreign' && !onPath) {
     console.log('');
-    console.log(`${esc(33, '!')} ${BIN_DIR} is not on your PATH`);
-    console.log(`  add to PATH: export PATH="$HOME/.local/bin:$PATH"`);
+    console.log(`${esc(33, '!')} ${shimDir} is not on your PATH`);
+    if (IS_WIN32) {
+      if (!npmPrefix) {
+        console.log(`  add to PATH: setx PATH "%PATH%;%USERPROFILE%\\.local\\bin"`);
+        console.log(`  ${dim('(open a new terminal afterwards — setx does not affect the current one)')}`);
+      }
+    } else {
+      console.log(`  add to PATH: export PATH="$HOME/.local/bin:$PATH"`);
+    }
   }
   console.log('');
   console.log('Next steps:');
@@ -755,7 +858,7 @@ function cmdUninstall() {
   row('statusline', SHARE_DIR, 'removed');
   row(
     'command',
-    SHIM_PATH,
+    shimInfo().path,
     shimRemoved ? 'shim removed' : 'no agline shim found (foreign files are left alone)'
   );
   row('config', CONFIG_DIR, 'kept — delete manually if unwanted');
@@ -793,6 +896,70 @@ function validateConfig(cfg) {
   return invalid;
 }
 
+// POSIX shim check: ~/.local/bin/agline must be a symlink to the installed copy.
+function doctorShimPosix(ok, bad, warn) {
+  const shimResolved = symlinkTarget(SHIM_PATH);
+  let shimForeign = false;
+  if (shimResolved === null) {
+    try {
+      fs.lstatSync(SHIM_PATH);
+      shimForeign = true;
+    } catch {
+      /* absent */
+    }
+  }
+  if (shimResolved === SHARE_PATH) {
+    ok(`command shim ${SHIM_PATH} -> ${SHARE_PATH}`);
+  } else if (shimForeign) {
+    warn(`${SHIM_PATH} exists but is not an agline shim — leaving it alone; the shim was skipped at install`);
+  } else if (shimResolved !== null) {
+    bad(`command shim ${SHIM_PATH} points at ${shimResolved}, expected ${SHARE_PATH} — run: agline install`);
+  } else {
+    bad(`command shim missing: ${SHIM_PATH} — run: agline install`);
+  }
+  if (!shimForeign && !binDirOnPath()) {
+    warn(`${BIN_DIR} is not on PATH — add to PATH: export PATH="$HOME/.local/bin:$PATH"`);
+  }
+}
+
+// Windows shim check: agline.cmd must exist, carry our marker, and point at an
+// existing target. The target is read from the shim's own `node "..."` line
+// (%~dp0-relative targets resolve against the shim's directory).
+function doctorShimWin(ok, bad, warn) {
+  const { path: shimPath, dir, npmPrefix } = shimInfo();
+  let content = null;
+  try {
+    content = fs.readFileSync(shimPath, 'utf8');
+  } catch {
+    /* absent */
+  }
+  let shimForeign = false;
+  if (content === null) {
+    bad(`command shim missing: ${shimPath} — run: agline install`);
+  } else if (!content.includes(WIN_CMD_MARKER)) {
+    shimForeign = true;
+    warn(`${shimPath} exists but is not an agline shim — leaving it alone; the shim was skipped at install`);
+  } else {
+    const m = content.match(/node "([^"]+)"/);
+    const rawTarget = m ? m[1] : null;
+    const target = rawTarget ? rawTarget.replace(/^%~dp0/, path.dirname(shimPath) + path.sep) : null;
+    if (!target) {
+      bad(`command shim ${shimPath} has no node target — run: agline install`);
+    } else if (!fs.existsSync(target)) {
+      bad(`command shim ${shimPath} target does not exist: ${target} — run: agline install`);
+    } else {
+      ok(`command shim ${shimPath} -> ${target}`);
+    }
+  }
+  if (!shimForeign && !dirOnPath(dir)) {
+    if (npmPrefix) {
+      warn(`${dir} is not on PATH — unusual for the npm global prefix; check your Node installation`);
+    } else {
+      warn(`${dir} is not on PATH — add to PATH: setx PATH "%PATH%;%USERPROFILE%\\.local\\bin" (then open a new terminal)`);
+    }
+  }
+}
+
 function cmdDoctor() {
   let failures = 0;
   const ok = (msg) => console.log(`✓ ${msg}`);
@@ -821,7 +988,7 @@ function cmdDoctor() {
       if (!sl || typeof sl.command !== 'string' || !sl.command.includes('agline')) {
         bad(`statusLine in ${SETTINGS_PATH} does not point at agline — run: agline install`);
       } else {
-        const target = sl.command.trim().split(/\s+/).pop();
+        const target = statusLineTarget(sl.command);
         if (!fs.existsSync(target)) {
           bad(`statusLine target does not exist: ${target}`);
         } else if (sl.enabled === true) {
@@ -848,28 +1015,11 @@ function cmdDoctor() {
     }
   }
 
-  // shim: ~/.local/bin/agline -> installed copy, and on PATH
-  const shimResolved = symlinkTarget(SHIM_PATH);
-  let shimForeign = false;
-  if (shimResolved === null) {
-    try {
-      fs.lstatSync(SHIM_PATH);
-      shimForeign = true;
-    } catch {
-      /* absent */
-    }
-  }
-  if (shimResolved === SHARE_PATH) {
-    ok(`command shim ${SHIM_PATH} -> ${SHARE_PATH}`);
-  } else if (shimForeign) {
-    warn(`${SHIM_PATH} exists but is not an agline shim — leaving it alone; the shim was skipped at install`);
-  } else if (shimResolved !== null) {
-    bad(`command shim ${SHIM_PATH} points at ${shimResolved}, expected ${SHARE_PATH} — run: agline install`);
+  // command shim, and whether its directory is on PATH
+  if (IS_WIN32) {
+    doctorShimWin(ok, bad, warn);
   } else {
-    bad(`command shim missing: ${SHIM_PATH} — run: agline install`);
-  }
-  if (!shimForeign && !binDirOnPath()) {
-    warn(`${BIN_DIR} is not on PATH — add to PATH: export PATH="$HOME/.local/bin:$PATH"`);
+    doctorShimPosix(ok, bad, warn);
   }
 
   // runtime config
@@ -907,11 +1057,13 @@ function printUsage() {
 
 Usage:
   agline              render one statusline frame (reads JSON payload from stdin)
-  agline install      copy agline to ~/.local/share/agline, symlink the \`agline\`
-                      command into ~/.local/bin, and enable the statusline in
+  agline install      copy agline to ~/.local/share/agline, put the \`agline\`
+                      command on PATH (POSIX: symlink in ~/.local/bin;
+                      Windows: agline.cmd in %APPDATA%\\npm or ~/.local/bin),
+                      and enable the statusline in
                       ~/.gemini/antigravity-cli/settings.json
   agline uninstall    restore/remove the statusLine setting and delete
-                      ~/.local/share/agline and the ~/.local/bin/agline shim
+                      ~/.local/share/agline and the command shim
   agline doctor       check node version, statusLine wiring, installed copy,
                       command shim, config and state dir (exit 1 when something
                       is broken)
@@ -945,6 +1097,12 @@ export {
   installShim,
   removeShim,
   binDirOnPath,
+  dirOnPath,
+  WIN_CMD_MARKER,
+  winCmdShimContent,
+  chooseWinShimDir,
+  statusLineCommand,
+  statusLineTarget,
   cmdInstall,
   cmdUninstall,
   cmdDoctor,

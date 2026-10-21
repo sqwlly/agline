@@ -70,6 +70,29 @@ deletes just the `statusLine` key), then removes `~/.local/share/agline` and the
 If the statusLine points at something else, it refuses and prints the current value. Your config
 in `~/.config/agline/` is kept; delete it manually if unwanted.
 
+## Windows (best-effort)
+
+Windows (win32) is supported on a best-effort basis — it is implemented and unit-tested but not
+exercised on real Windows hardware in CI.
+
+What works the same: `install` / `uninstall` / `doctor`, the statusLine wiring in
+`settings.json`, and the statusline renderer itself (pure Node, no shell-outs).
+
+What's different:
+
+- **No symlink.** Instead of the POSIX `~/.local/bin/agline` symlink, install writes a small
+  `agline.cmd` CMD wrapper (tagged with a `:: agline shim` marker line so uninstall/doctor can
+  tell it apart from foreign files — a file without the marker is never touched).
+- **Shim location.** The wrapper goes to `%APPDATA%\npm` (the npm global prefix, already on PATH
+  for typical Node installs) when that directory exists; otherwise to `%USERPROFILE%\.local\bin`,
+  and the installer prints a `setx PATH "%PATH%;%USERPROFILE%\.local\bin"` hint — open a **new
+  terminal** afterwards, `setx` does not affect the current one.
+- **settings.json** gets a quoted command (`node "C:\…\agline.mjs"`) so paths with spaces and
+  backslashes survive; the file stays ordinary JSON.
+
+If something is off on Windows, please open an issue at
+https://github.com/sqwlly/agline/issues with the full output of `agline doctor`.
+
 ## Doctor
 
 ```sh
@@ -110,7 +133,7 @@ is broken (0 otherwise). No network calls.
 | --- | --- |
 | `agline.mjs` | the entire statusline + CLI (`node agline.mjs [install\|uninstall\|doctor\|--version\|--help]`) |
 | `config.example.json` | documented defaults (reference only; the installer embeds them) |
-| `~/.local/bin/agline` | command shim → `~/.local/share/agline/agline.mjs` (created by install, removed by uninstall) |
+| `~/.local/bin/agline` | command shim → `~/.local/share/agline/agline.mjs` (POSIX; created by install, removed by uninstall). On Windows: `agline.cmd` in `%APPDATA%\npm` or `%USERPROFILE%\.local\bin` |
 | `~/.config/agline/config.json` | runtime config (not in repo) |
 | `~/.config/agline/burn-state.json` | ETA burn-rate samples (runtime) |
 | `~/.config/agline/stats.json` | usage-day streak (runtime) |

@@ -1,6 +1,6 @@
 {
   "name": "@sqwlly/agline",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Single-line, zero-dependency statusline HUD for Google Antigravity CLI (1.4.3+ protocol)",
   "type": "module",
   "bin": {

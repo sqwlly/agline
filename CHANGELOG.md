@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-10-21
+
+### Added
+
+- Windows (win32) install support, best-effort. `agline install` on Windows now writes a marker-tagged `agline.cmd` CMD wrapper instead of attempting a POSIX symlink: into `%APPDATA%\npm` (the npm global prefix, already on PATH for typical Node installs) when that directory exists, else `~/.local/bin` with a `setx PATH` hint and a note that a new terminal is needed. The wrapper invokes the installed copy via a `%~dp0`-relative path (absolute when the share dir is on another drive). A pre-existing file without the `:: agline shim` marker is never clobbered.
+- `agline doctor` is platform-aware: on Windows it verifies the `.cmd` shim exists, carries the agline marker and points at an existing target, and its PATH warning checks the directory actually used (with a `setx` hint when the fallback dir was chosen).
+- `agline uninstall` on Windows removes the `.cmd` shim (marker-verified) alongside the share dir; settings restore logic is unchanged.
+
+### Fixed
+
+- `agline doctor` previously failed on Windows because the shim checks were POSIX-only (symlink resolution, extensionless executable).
+- The statusLine command written to `settings.json` is now quoted on Windows (`node "C:\…\agline.mjs"`) so paths containing spaces survive; `JSON.stringify` escapes the backslashes. POSIX output is byte-identical to previous releases.
+
 ## [0.2.2] - 2026-10-21
 
 ### Fixed
