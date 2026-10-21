@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 
 const HOME = os.homedir();
 const CONFIG_DIR = path.join(HOME, '.config', 'agline');
@@ -367,7 +367,7 @@ function quotaBlock(q, label, cfg, opts) {
   const pct = Math.round(frac * 100);
   const code = pct > 40 ? 32 : pct > 20 ? 33 : 31;
   const b = bar(pct, cfg.quotaBarWidth);
-  let s = `${dim(label)} ${esc(code, b.filled)}${dim(b.empty)} ${esc(`1;${code}`, `${String(pct).padStart(3)}%`)}`;
+  let s = `${dim(label)} ${esc(code, b.filled)}${dim(b.empty)} ${esc(`1;${code}`, `${pct}%`)}`;
   if (countdown && !opts.dropCountdowns) s += ` ${dim('·')} ${dim(countdown)}`;
   return s;
 }
@@ -397,7 +397,7 @@ function buildLine(p, cfg, opts, fx) {
   const ctxCode = fx.pct >= cfg.contextCritical ? 31 : fx.pct >= cfg.contextWarning ? 33 : 32;
   const cb = bar(fx.pct, cfg.barWidth);
   segs.push(
-    `${dim('Context')} ${esc(ctxCode, cb.filled)}${dim(cb.empty)} ${esc(`1;${ctxCode}`, `${String(fx.pctLabel).padStart(3)}%`)}`
+    `${dim('Context')} ${esc(ctxCode, cb.filled)}${dim(cb.empty)} ${esc(`1;${ctxCode}`, `${fx.pctLabel}%`)}`
   );
 
   if (cfg.showEta && !opts.dropEta && fx.eta) segs.push(dim(`ETA ${fx.eta}`));
@@ -590,38 +590,34 @@ function readSettings(strict) {
 
 function cmdInstall() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  if (!fs.existsSync(CONFIG_PATH)) {
+  const configCreated = !fs.existsSync(CONFIG_PATH);
+  if (configCreated) {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULTS, null, 2) + '\n');
-    console.log(`created ${CONFIG_PATH} (built-in defaults)`);
-  } else {
-    console.log(`config already exists: ${CONFIG_PATH} (untouched)`);
   }
 
   fs.mkdirSync(SHARE_DIR, { recursive: true });
   const src = selfPath();
   const alreadyThere = fs.existsSync(SHARE_PATH) && fs.realpathSync(SHARE_PATH) === src;
-  if (alreadyThere) {
-    console.log(`already installed: ${SHARE_PATH} (self-copy skipped)`);
-  } else {
+  if (!alreadyThere) {
     fs.copyFileSync(src, SHARE_PATH);
     try {
       fs.chmodSync(SHARE_PATH, 0o755);
     } catch {
       /* best effort */
     }
-    console.log(`copied ${src} -> ${SHARE_PATH}`);
   }
 
   const { settings, existed } = readSettings(true);
   if (!existed) fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
 
+  const bak = `${SETTINGS_PATH}.bak`;
+  let backupNote = null;
   if (existed) {
-    const bak = `${SETTINGS_PATH}.bak`;
     if (!fs.existsSync(bak)) {
       fs.copyFileSync(SETTINGS_PATH, bak);
-      console.log(`backup written: ${bak}`);
+      backupNote = 'written';
     } else {
-      console.log(`backup already exists: ${bak} (oldest kept)`);
+      backupNote = 'already exists, oldest kept';
     }
   }
 
@@ -636,20 +632,23 @@ function cmdInstall() {
     }
   }
 
-  console.log(`patched ${SETTINGS_PATH}`);
-  console.log(`  statusLine = ${JSON.stringify(settings.statusLine)}`);
+  const row = (label, value, note) =>
+    console.log(`  ${dim(label.padEnd(11))} ${value}${note ? dim(` (${note})`) : ''}`);
   console.log('');
-  console.log('Rollback: restore the previous statusLine value:');
-  console.log(`  previous statusLine = ${JSON.stringify(prev ?? null)}`);
-  if (prev && typeof prev.command === 'string') {
-    console.log('');
-    console.log('  e.g. edit settings.json and set:');
-    console.log(
-      `  "statusLine": ${JSON.stringify({ type: prev.type ?? 'command', command: prev.command }, null, 2)}`
-    );
-  }
+  console.log(`${esc(32, '✓')} agline ${VERSION} installed`);
   console.log('');
-  console.log(`Or simply run: agline uninstall`);
+  row('statusline', SHARE_PATH, alreadyThere ? 'already current' : 'copied');
+  row('config', CONFIG_PATH, configCreated ? 'defaults written' : 'already exists, untouched');
+  row('settings', SETTINGS_PATH, 'statusLine patched');
+  if (backupNote) row('backup', bak, backupNote);
+  console.log('');
+  console.log('Next steps:');
+  console.log(`  ${dim('·')} Restart agy (or start a new session) to see the statusline`);
+  console.log(`  ${dim('·')} agline doctor        verify the setup anytime`);
+  console.log(`  ${dim('·')} edit config.json     tweak bars, thresholds, toggles`);
+  console.log(`  ${dim('·')} agline uninstall     restore previous statusLine`);
+  console.log('');
+  console.log(`${dim('Previous statusLine (rollback):')} ${prev === undefined ? 'none' : JSON.stringify(prev)}`);
 }
 
 function cmdUninstall() {
@@ -657,6 +656,7 @@ function cmdUninstall() {
   if (settings === null) {
     fail(`${SETTINGS_PATH} is not a JSON object; refusing to touch it`);
   }
+  let settingsNote = 'no agline statusLine found (untouched)';
   if (existed && settings.statusLine != null) {
     const cmd = settings.statusLine?.command;
     if (typeof cmd !== 'string' || !cmd.includes('agline')) {
@@ -667,18 +667,23 @@ function cmdUninstall() {
     const bak = `${SETTINGS_PATH}.bak`;
     if (fs.existsSync(bak)) {
       fs.copyFileSync(bak, SETTINGS_PATH);
-      console.log(`restored ${SETTINGS_PATH} from ${bak}`);
+      settingsNote = 'restored from backup';
     } else {
       delete settings.statusLine;
       fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
-      console.log(`removed statusLine key from ${SETTINGS_PATH} (no backup to restore)`);
+      settingsNote = 'statusLine removed, no backup to restore';
     }
-  } else {
-    console.log(`no agline statusLine found in ${SETTINGS_PATH} (nothing to patch)`);
   }
   fs.rmSync(SHARE_DIR, { recursive: true, force: true });
-  console.log(`removed ${SHARE_DIR}`);
-  console.log(`config kept: ${CONFIG_DIR} (delete manually if unwanted)`);
+
+  const row = (label, value, note) =>
+    console.log(`  ${dim(label.padEnd(11))} ${value}${note ? dim(` (${note})`) : ''}`);
+  console.log('');
+  console.log(`${esc(32, '✓')} agline ${VERSION} uninstalled`);
+  console.log('');
+  row('settings', SETTINGS_PATH, settingsNote);
+  row('statusline', SHARE_DIR, 'removed');
+  row('config', CONFIG_DIR, 'kept — delete manually if unwanted');
 }
 
 function validateConfig(cfg) {

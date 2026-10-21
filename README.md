@@ -12,7 +12,7 @@ Inspired by agy-hud (MIT) by AllenMuu — rewritten from scratch for Antigravity
 ## What it shows
 
 ```
-[Gemini 4 Argon] │ veyra git:(main*) │ Context ▰▰▰░░░░░░░  30% │ ETA 2h10m │ 5h ▰▰▰▰▰▱  77% · 2h15m · Wk ▰▱▱▱▱▱  10% · 3d4h │ ★ 12d
+[Gemini 4 Argon] │ veyra git:(main*) │ Context ▰▰▰░░░░░░░ 30% │ ETA 2h10m │ 5h ▰▰▰▰▰▱ 77% · 2h15m · Wk ▰▱▱▱▱▱ 10% · 3d4h │ ★ 12d
 ```
 
 - **Spinner** (`◐ ◓ ◑ ◒`) while the agent is active
@@ -23,7 +23,7 @@ Inspired by agy-hud (MIT) by AllenMuu — rewritten from scratch for Antigravity
 - **Quota** 5h / weekly buckets with reset countdowns (gemini vs 3p chosen from the model name)
 - **Streak** of *consecutive* usage days in your local timezone (`~/.config/agline/stats.json`) + milestone trophies at 7/30/100/365 days
 
-Segments drop progressively (streak → ETA → weekly quota → countdowns → `…` truncation) to fit the terminal width. Percentages are fixed-width (`  9%`, ` 45%`, `100%`) so columns never jitter between renders, and countdowns are compact (`2h46m`, `3d4h`). ANSI-aware: never cuts inside an escape sequence. Respects `NO_COLOR`.
+Segments drop progressively (streak → ETA → weekly quota → countdowns → `…` truncation) to fit the terminal width. Percentages render at natural width with a single space (`9%`, `45%`, `100%`), and countdowns are compact (`2h46m`, `3d4h`). ANSI-aware: never cuts inside an escape sequence. Respects `NO_COLOR`.
 
 ## Install
 

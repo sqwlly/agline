@@ -88,10 +88,11 @@ test('quota key selection follows the model family', () => {
   assert.deepEqual(selectQuotaKeys('Claude Sonnet 4.5'), ['3p-5h', '3p-weekly']);
 });
 
-test('quota fraction clamps to [0,1] and percent pads to 3 chars', () => {
+test('quota fraction clamps to [0,1] and percent is natural width', () => {
   assert.ok(stripAnsi(quotaBlock({ remaining_fraction: 1.4 }, '5h', DEFAULTS, {})).includes('100%'));
-  assert.ok(stripAnsi(quotaBlock({ remaining_fraction: -0.2 }, '5h', DEFAULTS, {})).includes('  0%'));
-  assert.ok(stripAnsi(quotaBlock({ remaining_fraction: 0.09 }, 'Wk', DEFAULTS, {})).includes('  9%'));
+  assert.ok(stripAnsi(quotaBlock({ remaining_fraction: -0.2 }, '5h', DEFAULTS, {})).includes(' 0%'));
+  assert.ok(stripAnsi(quotaBlock({ remaining_fraction: 0.09 }, 'Wk', DEFAULTS, {})).includes(' 9%'));
+  assert.ok(!stripAnsi(quotaBlock({ remaining_fraction: 0.09 }, 'Wk', DEFAULTS, {})).includes('  9%'));
   assert.equal(quotaBlock({ remaining_fraction: 'x' }, '5h', DEFAULTS, {}), null);
   assert.equal(quotaBlock(null, '5h', DEFAULTS, {}), null);
 });
@@ -245,9 +246,9 @@ test('golden render at width 150: all segments, new formats', () => {
   assert.ok(!line.includes('\n'), 'exactly one line');
   assert.ok(line.includes('[Gemini 4 Argon]'), 'effort suffix stripped from badge');
   assert.ok(!line.includes('(High)'));
-  assert.ok(line.includes(' 45%'), 'fixed-width context percent');
+  assert.ok(line.includes(' 45%'), 'context percent');
   assert.ok(line.includes(' 77% · 2h46m'), '5h quota, compact countdown');
-  assert.ok(line.includes('Wk ▰▱▱▱▱▱   9% · 3d4h'), 'weekly quota, compact countdown');
+  assert.ok(line.includes('Wk ▰▱▱▱▱▱ 9% · 3d4h'), 'weekly quota, compact countdown');
   assert.ok(line.includes('ETA 30m'));
   assert.ok(line.includes('★ 3d'));
   assert.ok(line.includes(' │ '));
@@ -275,7 +276,7 @@ test('golden render at width 70: weekly and countdowns dropped', () => {
   assert.ok(line.includes(' 45%'));
 });
 
-test('fixed-width percent keeps label columns aligned (9% vs 100%)', () => {
+test('natural-width percent: single space before %, no padding', () => {
   seedState();
   const mk = (pct) =>
     stripAnsi(
@@ -286,8 +287,8 @@ test('fixed-width percent keeps label columns aligned (9% vs 100%)', () => {
     );
   const line9 = mk(9);
   const line100 = mk(100);
-  assert.ok(line9.includes('  9%'));
-  assert.ok(line100.includes('100%'));
+  assert.ok(line9.includes(' 9%'), 'single space before 9%');
+  assert.ok(!line9.includes('  9%'), 'no padding for single-digit percent');
+  assert.ok(line100.includes(' 100%'));
   assert.equal(line9.indexOf('Context'), line100.indexOf('Context'));
-  assert.equal(line9.indexOf('%'), line100.indexOf('%'), 'percent column does not jitter');
 });

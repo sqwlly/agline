@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-10-21
+
+### Changed
+
+- Reverted the 0.2.0 fixed-width percent padding: percentages render at natural width again with a single space (`Context ▱▱▱▱▱▱▱▱▱▱ 0%`, `5h ▰▰▰▰▰▰ 96%`) — the padded form produced ugly gaps. Applies to the context percent and both quota percents.
+- `agline install` success output is now a polished summary: installed paths with per-file notes, a "Next steps" block, and the previous statusLine value for rollback — all non-interactive, NO_COLOR aware, under 20 lines.
+- `agline uninstall` success output matches the same style: what was restored/removed and a note that the config is kept. Behavior (idempotency, backups, exit codes) is unchanged.
+
 ## [0.2.0] - 2026-10-21
 
 ### Added
